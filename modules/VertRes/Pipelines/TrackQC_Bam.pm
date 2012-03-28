@@ -19,6 +19,7 @@ use VertRes::Utils::GTypeCheck;
 use VertRes::Utils::GTypeCheckGLF;
 use VRTrack::VRTrack;
 use VRTrack::Lane;
+use VRTrack::AutoQC;
 use VRTrack::Mapstats;
 use VertRes::Parser::bamcheck;
 use VertRes::Parser::bam;
@@ -784,10 +785,16 @@ sub auto_qc
     # Now output the results.
     open(my $fh,'>',"$sample_dir/auto_qc.txt") or $self->throw("$sample_dir/auto_qc.txt: $!");
     $status = 1;
-    for my $stat (@qc_status)
+    foreach my $stat (@qc_status)
     {
         if ( !$$stat{status} ) { $status=0; }
         print $fh "$$stat{test}:\t", ($$stat{status} ? 'PASSED' : 'FAILED'), "\t # $$stat{reason}\n";
+        
+        my $autoqc_status = $vrlane->add_autoqc();
+        $autoqc_status->test($$stat{test});
+        $autoqc_status->result($$stat{status});
+        $autoqc_status->reason($$stat{reason});
+        $autoqc_status->update();
     }
     print $fh "Verdict:\t", ($status ? 'PASSED' : 'FAILED'), "\n";
     close($fh);
