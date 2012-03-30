@@ -781,6 +781,42 @@ sub auto_qc
         }
     }
 
+    # Duplication rate
+    $status = 1;
+    $test = 'duprate';
+    $reason = 'dup rate is < 3%';
+    if ( defined ($vrlane->mapstats()) ) {
+        #work out which mapstats has the QC data (i.e. check for images in the mapstats)
+        my @mappings = @{ $lane->mappings() };
+        my $mapstats;
+        foreach( sort {$a->row_id() <=> $b->row_id()} @mappings )
+        {
+            my $map = $_;
+            my $im = $map->images();
+            if( @{$im} > 0 ){$mapstats = $map;}
+        }
+
+        $mapstats = $vrlane->mapstats();
+
+        # is duplication rate > 3%?
+        $duprate = (1-($mapstats->rmdup_reads_mapped/$mapstats->reads_mapped));
+        if ($duprate > 0.03) {
+            $status = 0; $reason = sprintf "Duplication rate > 3% it is $duprate";
+        }
+    }
+    push @qc_status, { test=>$test, status=>$status, reason=>$reason };
+
+    # NPG QC check
+    $status = 1;
+    $test = 'npgqc';
+    $reason = "NPG QC is 'pass'";
+    if ( $vrlane->npg_qc_status() ne 'pass' )
+    {
+       $status = 0; $reason = sprintf "NPG QC status is not 'pass' (it is '${vrlane->npg_qc_status()}')";
+    }
+
+    push @qc_status, { test=>$test, status=>$status, reason=>$reason };
+
 
     # Now output the results.
     open(my $fh,'>',"$sample_dir/auto_qc.txt") or $self->throw("$sample_dir/auto_qc.txt: $!");
