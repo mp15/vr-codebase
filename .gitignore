@@ -9,3 +9,7 @@ modules/VRTrack/Testconfig.pm
 _build
 blib
 Build
+MANIFEST
+MANIFEST.SKIP
+MANIFEST.SKIP.bak
+_Inline/
