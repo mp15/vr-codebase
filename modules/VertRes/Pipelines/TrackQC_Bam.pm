@@ -741,7 +741,7 @@ sub auto_qc
     {
     	$test = 'Insert size';
 
-		if ( $bc->get('reads_paired') == 0 )
+        if ( $bc->get('reads_paired') == 0 )
         { 
             push @qc_status, { test=>$test, status=>0, reason=>'Zero paired reads, yet flagged as paired' };
         }
