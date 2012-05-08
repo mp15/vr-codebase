@@ -69,7 +69,8 @@ sub fields_dispatch {
 	    mapstats_id => sub { $self->mapstats_id(@_) },
 	    name        => sub { $self->name(@_) },
 	    caption     => sub { $self->caption(@_) },
-	    image       => sub { $self->image(@_) }};
+	    image       => sub { $self->image(@_) },
+            md5         => sub { $self->md5(@_)}};
 }
 
 
@@ -171,6 +172,22 @@ sub image {
 sub mapstats_id {
     my $self = shift;
     return $self->_get_set('mapstats_id', 'number', @_);
+}
+
+
+=head2 md5
+
+  Arg [1]    : md5 (optional)
+  Example    : my $md5 = $file->md5();
+               $file->md5('1027759a77eb562fcab253c9f01d7661');
+  Description: Get/Set for md5 of a file
+  Returntype : string
+
+=cut
+
+sub md5 {
+    my $self = shift;
+    return $self->_get_set('md5', 'string', @_);
 }
 
 
