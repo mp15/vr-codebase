@@ -44,7 +44,7 @@ sub fields_dispatch {
                lane_id           => sub { $self->lane_id(@_)},
                test              => sub { $self->test(@_)},
                result            => sub { $self->result(@_)},
-               reason            => sub { $self->reason(@_)}
+               reason            => sub { $self->reason(@_)},
                current_run       => sub { $self->current_run(@_)});
 
     return \%fields;
