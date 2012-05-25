@@ -44,7 +44,8 @@ sub fields_dispatch {
                lane_id           => sub { $self->lane_id(@_)},
                test              => sub { $self->test(@_)},
                result            => sub { $self->result(@_)},
-               reason            => sub { $self->reason(@_)});
+               reason            => sub { $self->reason(@_)}
+               current_run       => sub { $self->current_run(@_)});
 
     return \%fields;
 }
@@ -93,6 +94,10 @@ sub result {
 sub reason {
     my $self = shift;
     return $self->_get_set('reason', 'string', @_);
+}
+sub current_run {
+    my $self = shift;
+    return $self->_get_set('current_run', 'number', @_);
 }
 
 1;
