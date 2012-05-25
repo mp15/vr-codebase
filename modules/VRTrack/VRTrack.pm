@@ -1870,6 +1870,7 @@ CREATE TABLE `autoqc`
    `latest` tinyint(1) DEFAULT '0',
    changed timestamp DEFAULT '0000-00-00 00:00:00' NOT NULL,
    note_id int,
+   current_run tinyint(1) DEFAULT '1',
    PRIMARY KEY (`row_id`)
 );
 
