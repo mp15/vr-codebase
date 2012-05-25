@@ -1,6 +1,6 @@
 package Vcf;
 
-our $VERSION = 'r709';
+our $VERSION = 'r735';
 
 # http://vcftools.sourceforge.net/specs.html
 # http://www.1000genomes.org/wiki/Analysis/Variant%20Call%20Format/vcf-variant-call-format-version-41
@@ -162,7 +162,11 @@ sub new
     if ( !exists($$self{max_line_len}) && exists($ENV{MAX_VCF_LINE_LEN}) ) { $$self{max_line_len} = $ENV{MAX_VCF_LINE_LEN} }
     $$self{fix_v40_AGtags} = $ENV{DONT_FIX_VCF40_AG_TAGS} ? 0 : 1;
     my %open_args = ();
-    if ( exists($$self{region}) ) { $open_args{region}=$$self{region}; }
+    if ( exists($$self{region}) ) 
+    { 
+        $open_args{region}=$$self{region}; 
+        if ( !exists($$self{print_header}) ) { $$self{print_header}=1; }
+    }
     if ( exists($$self{print_header}) ) { $open_args{print_header}=$$self{print_header}; }
     return $self->_open(%open_args);
 }
@@ -199,7 +203,7 @@ sub _open
 
         my $tabix_args = '';
         if ( exists($args{print_header}) && $args{print_header} ) { $tabix_args .= ' -h '; }
-        $tabix_args .= $$self{file};
+        $tabix_args .= qq['$$self{file}'];
         if ( exists($args{region}) && defined($args{region}) ) { $tabix_args .= qq[ '$args{region}']; }
 
         if ( -e $$self{file} && $$self{file}=~/\.gz/i )
@@ -208,7 +212,7 @@ sub _open
             {
                 $cmd = "tabix $tabix_args |";
             }
-            else { $cmd = "gunzip -c $$self{file} |"; } 
+            else { $cmd = "gunzip -c '$$self{file}' |"; } 
             $$self{check_exit_status} = 1;
         }
         elsif ( $$self{file}=~m{^(?:http|ftp)://} )
@@ -338,6 +342,7 @@ sub next_data_array
     my ($self,$line) = @_;
     if ( !$line ) { $line = $self->next_line(); }
     if ( !$line ) { return undef; }
+    if ( ref($line) eq 'ARRAY' ) { return $line; }
     my @items = split(/\t/,$line);
     chomp($items[-1]);
     return \@items;
@@ -1025,6 +1030,7 @@ sub recalc_ac_an
 sub get_tag_index
 {
     my ($self,$field,$tag,$sep) = @_;
+    if ( !defined $field ) { return -1; }
     my $idx = 0;
     my $prev_isep = 0;
     my $isep = 0;
@@ -1263,8 +1269,8 @@ sub split_mandatory
 
 =head2 split_gt
 
-    About   : Faster alternative to regexs, diploid GT assumed
-    Usage   : my ($a1,$a2) = $vcf->split_gt('0/0'); # returns (0,0)
+    About   : Faster alternative to regexs
+    Usage   : my ($a1,$a2,$a3) = $vcf->split_gt('0/0/1'); # returns (0,0,1)
     Arg     : Diploid genotype to split into alleles
     Returns : Array of values
 
@@ -1273,17 +1279,49 @@ sub split_mandatory
 sub split_gt
 {
     my ($self,$gt) = @_;
-    my $isep = index($gt,'/');
-    if ( $isep<0 ) 
-    { 
-        $isep = index($gt,'|'); 
-        if ( $isep<0 ) { return $gt; }
+    my @als;
+    my $iprev = 0;
+    while (1)
+    {
+        my $isep = index($gt,'/',$iprev);
+        my $jsep = index($gt,'|',$iprev);
+        if ( $isep<0 or ($jsep>=0 && $jsep<$isep) ) { $isep = $jsep; }
+        push @als, $isep<0 ? substr($gt,$iprev) : substr($gt,$iprev,$isep-$iprev);
+        if ( $isep<0 ) { return (@als); }
+        $iprev = $isep+1;
     }
-    my $a1 = substr($gt,0,$isep);
-    my $a2 = substr($gt,$isep+1);
-    return ($a1,$a2);
+    return (@als);
 }
 
+=head2 split_by
+
+    About   : Generalization of split_gt
+    Usage   : my ($a1,$a2,$a3) = $vcf->split_gt('0/0|1',qw(| /)); # returns (0,0,1)
+    Arg     : Diploid genotype to split into alleles
+    Returns : Array of values
+
+=cut
+
+sub split_by
+{
+    my ($self,$str,@seps) = @_;
+    my @out;
+    my $iprev = 0;
+    while (1)
+    {
+        my $min;
+        for my $sep (@seps)
+        {
+            my $idx = index($str,$sep,$iprev);
+            if ( $idx==-1 ) { next; }
+            if ( !defined $min or $idx<$min ) { $min=$idx }
+        }
+        push @out, defined $min ? substr($str,$iprev,$min-$iprev) : substr($str,$iprev);
+        if ( !defined $min ) { return @out; }
+        $iprev = $min+1;
+    }
+    return (@out);
+}
 
 =head2 decode_genotype
 
@@ -2342,9 +2380,34 @@ sub validate_info_field
 
 =cut
 
+sub binom
+{
+    my ($n, $k) = @_;
+    my $b = 1;
+    if ( $k > $n-$k ) { $k = $n-$k; }
+    if ( $k < 1 ) { return 1; }
+    for (my $i=0; $i<$k; $i++) { $b *= ($n-$i)/($k-$i); }
+    return $b;
+}
+
 sub validate_gtype_field
 {
     my ($self,$data,$alts,$format) = @_;
+
+    my @errs;
+    my $ploidy = 2; 
+    if ( !exists($$data{GT}) ) { push @errs, "The mandatory tag GT not present." unless $$self{ignore_missing_GT}; }
+    else
+    {
+        my (@als) = $self->split_by($$data{GT},@{$$self{gt_sep}});
+        for my $al (@als)
+        {
+            if ( $al eq '.' or $al eq '0' ) { next; }
+            if ( !($al=~/^[0-9]+$/) ) { push @errs, "Unable to parse the GT field [$$data{GT}], expected integers"; }
+            if ( !exists($$alts[$al-1]) ) { push @errs, "Bad ALT value in the GT field, the index [$al] out of bounds [$$data{GT}]."; last; }
+        }
+        $ploidy = @als;
+    }
 
     # Expected numbers
     my $ng = -1;
@@ -2355,11 +2418,10 @@ sub validate_gtype_field
         else
         {
             $na = @$alts;
-            $ng = (1+$na+1)*($na+1)/2;
+            $ng = binom($ploidy+$na,$ploidy);
         }
     }
 
-    my @errs;
     while (my ($key,$value) = each %$data)
     {
         if ( !exists($$self{header}{FORMAT}{$key}) )
@@ -2388,31 +2450,6 @@ sub validate_gtype_field
         {
             my $err = &{$$type{handler}}($self,$val,$$type{default});
             if ( $err ) { push @errs, $err; }
-        }
-    }
-    if ( !exists($$data{GT}) ) { push @errs, "The mandatory tag GT not present." unless $$self{ignore_missing_GT}; }
-    else
-    {
-        my $buf = $$data{GT};
-        while ($buf ne '')
-        {
-            my $al = $buf;
-            if ( $buf=~$$self{regex_gtsep} )
-            {
-                $al  = $`;
-                $buf = $';
-                if ( $buf eq '' ) { push @errs, "Unable to parse the GT field [$$data{GT}]."; last; }
-            }
-            else
-            {
-                $buf = '';
-            }
-
-            if ( !defined $al ) { push @errs, "Unable to parse the GT field [$$data{GT}]."; last; }
-            if ( $al eq '.' ) { next; }
-            if ( $al eq '0' ) { next; }
-            if ( !($al=~/^[0-9]+$/) ) { push @errs, "Unable to parse the GT field [$$data{GT}], expected integer."; last; }
-            if ( !exists($$alts[$al-1]) ) { push @errs, "Bad ALT value in the GT field, the index [$al] out of bounds [$$data{GT}]."; last; }
         }
     }
     if ( !@errs ) { return undef; }
@@ -2582,9 +2619,11 @@ sub get_chromosomes
 {
     my ($self) = @_;
     if ( !$$self{file} ) { $self->throw(qq[The parameter "file" not set.\n]); }
-    my (@out) = `tabix -l $$self{file}`;
+    my (@out) = `tabix -l '$$self{file}'`;
     if ( $? ) 
     { 
+        my @has_tabix = `which tabix`;
+        if ( !@has_tabix ) { $self->throw(qq[The command "tabix" not found, please add it to your PATH\n]); }
         $self->throw(qq[The command "tabix -l $$self{file}" exited with an error. Is the file tabix indexed?\n]); 
     }
     for (my $i=0; $i<@out; $i++) { chomp($out[$i]); }
@@ -2706,6 +2745,7 @@ sub new
         regex_gtsep => qr{[\\|/]},
         regex_gt    => qr{^(\.|\d+)([\\|/]?)(\.?|\d*)$},
         regex_gt2   => qr{^(\.|[0-9ACGTNIDacgtn]+)([\\|/]?)}, # . 0/1 0|1 A/A A|A D4/IACGT
+        gt_sep => [qw(\ | /)],
     };
 
     for my $key (keys %{$$self{_defaults}}) 
@@ -2768,6 +2808,7 @@ sub new
         regex_gtsep => qr{[|/]},                     # | /
         regex_gt    => qr{^(\.|\d+)([|/]?)(\.?|\d*)$},   # . ./. 0/1 0|1
         regex_gt2   => qr{^(\.|[0-9ACGTNacgtn]+|<[\w:.]+>)([|/]?)},   # . ./. 0/1 0|1 A/A A|A 0|<DEL:ME:ALU>
+        gt_sep => [qw(| /)],
     };
 
     for my $key (keys %{$$self{_defaults}}) 
@@ -3003,7 +3044,6 @@ sub Vcf4_0::event_type
 
     my $reflen = length($ref);
     my $len = length($allele);
-    
     my $ht;
     my $type;
     if ( $len==$reflen )
@@ -3137,6 +3177,7 @@ sub new
         regex_gtsep => qr{[|/]},                     # | /
         regex_gt    => qr{^(\.|\d+)([|/]?)(\.?|\d*)$},   # . ./. 0/1 0|1
         regex_gt2   => qr{^(\.|[0-9ACGTNacgtn]+|<[\w:.]+>)([|/]?)},   # . ./. 0/1 0|1 A/A A|A 0|<DEL:ME:ALU>
+        gt_sep => [qw(| /)],
     };
 
     $$self{ignore_missing_GT} = 1;
@@ -3285,7 +3326,18 @@ sub Vcf4_1::next_data_array
 sub Vcf4_1::event_type
 {
     my ($self,$rec,$allele) = @_;
-    if ( $allele=~/\[|\]|^\..+|.+\.$/ ) { return 'b'; }
+
+    my $len = length($allele);
+    if ( $len==1 ) { return $self->SUPER::event_type($rec,$allele); }
+
+    my $c = substr($allele,0,1);
+    if ( $c eq '<' ) { return ('u',0,$allele); }
+    elsif ( $c eq '[' or $c eq ']' or $c eq '.' ) { return 'b'; }
+
+    $c = substr($allele,-1,1);
+    if ( $c eq '[' or $c eq ']' or $c eq '.' ) { return 'b'; }
+    elsif ( index($allele,'[')!=-1 or index($allele,']')!=-1 ) { return 'b'; }
+
     return $self->SUPER::event_type($rec,$allele);
 }
 

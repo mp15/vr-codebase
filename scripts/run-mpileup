@@ -31,7 +31,10 @@ sub new
     $$self{merge_pops} = 0;
     $$self{whole_genome_bams} = 1;
     $$self{_sampleconf} = q[
-            mpileup  => 'samtools mpileup -EDS -C50 -m2 -F0.0005 -d 10000 -P ILLUMINA',
+            # Add -P ILLUMINA or -P SLX if the BAMs contain also reads from different platforms. 
+            #   The options -m2 -F0.0005 are intended for hundred of samples, go with the mpileup's
+            #   defaults if you don't have that many.
+            mpileup  => 'samtools mpileup -EDS -C50 -m2 -F0.0005 -d 10000',
             bcftools => 'bcftools view -p 0.99 -vcgN',
             
             bams     => '/lustre/scratch105/projects/g1k/MAIN-ANALYSIS/20101123-whole-genome-calling/merge_across_bams.list',
@@ -160,7 +163,7 @@ sub parse_args
     }
     if ( !exists($$self{mpileup}) ) 
     { 
-        $$self{mpileup} = 'samtools mpileup -DS -C50 -m2 -F0.0005 -d 10000 -P ILLUMINA';
+        $$self{mpileup} = 'samtools mpileup -DS -C50 -m2 -F0.0005 -d 10000';
         $self->warn("The 'mpileup' config key not present, assuming: $$self{mpileup}\n"); 
     }
     if ( !exists($$self{bcftools}) ) 
@@ -209,6 +212,7 @@ sub main
     my @chroms = @{$$self{chroms}};
 
     if ( $self->is_finished("$outdir/all_done") ) { $self->all_done; }
+    if ( !$self->is_finished("$outdir/sanity_checked") ) { $self->check_sanity; }
 
     # Create sample list for each population group
     while (my ($pop,$value) = each %{$$self{pops}})
@@ -359,6 +363,36 @@ sub cmd
 {
     my ($self,$cmd) = @_;
     return Utils::CMD($cmd,{verbose=>$$self{_verbose}});
+}
+
+sub check_sanity
+{
+    my ($self) = @_;
+
+    # Check that the -P option corresponds to PL in the BAMs
+    if ( !($$self{mpileup}=~/-\S*P\s+(\S+)/) ) { return; }
+    my %pl = map { $_=>1 } split(/,/,$1);
+    my %bam_pls = ();
+
+    open(my $fh,'<',$$self{bams}) or $self->throw("$$self{bams}: $!");
+    while (my $bam=<$fh>)
+    {
+        chomp($bam);
+        my @rgs = `samtools view -H $bam | grep ^\@RG`;
+        for my $rg (@rgs)
+        {
+            if ( !($rg=~/\tPL:(\S+)/) ) { next; }
+            $bam_pls{$1} = 1;
+        }
+    }
+    close($fh);
+
+    for my $pl (keys %pl)
+    {
+        if ( !exists($bam_pls{$pl}) ) { $self->throw("The platform \"$pl\" not present in any of the BAMs.\n"); }
+    }
+    `mkdir -p $$self{outdir}`;
+    $self->cmd("touch $$self{outdir}/sanity_checked");
 }
 
 sub open_file
