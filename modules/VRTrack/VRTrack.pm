@@ -1483,7 +1483,6 @@ CREATE TABLE `image` (
   `name` varchar(255) NOT NULL DEFAULT '',
   `caption` varchar(40) DEFAULT NULL,
   `image` MEDIUMBLOB,
-  `md5` char(32) NULL,
   PRIMARY KEY (`image_id`),
   KEY  `mapstats_id` (`mapstats_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
