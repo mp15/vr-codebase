@@ -1188,7 +1188,7 @@ sub get_field
     {
         $isep = index($col,$delim,$prev_isep);
         if ( $itag==$idx ) { last; }
-        if ( $isep==-1 ) { $self->throw("The index out of range: $col:$isep .. $idx"); }
+        if ( $isep==-1 ) { return '.'; }    # This is valid, missing fields can be ommited from genotype columns
         $prev_isep = $isep+1;
         $itag++;
     }
@@ -3207,6 +3207,8 @@ sub Vcf4_1::validate_line
         if ( !@$lines ) { $self->warn("The header tag 'contig' not present for CHROM=$$line{CHROM}. (Not required but highly recommended.)\n"); }
         $$self{_contig_validated}{$$line{CHROM}} = 1;
     }
+
+    if ( index($$line{CHROM},':')!=-1 ) { $self->warn("Colons not allowed in chromosome names: $$line{CHROM}\n"); }
 
     # Is the ID composed of alphanumeric chars
     if ( !($$line{ID}=~/^\S+$/) ) { $self->warn("Expected non-whitespace ID at $$line{CHROM}:$$line{POS}, but got [$$line{ID}]\n"); }
