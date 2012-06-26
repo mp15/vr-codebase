@@ -2647,6 +2647,54 @@ sub get_samples
 }
 
 
+=head2 get_column
+
+    About   : Convenient way to get data for a sample
+    Usage   : my $rec = $vcf->next_data_array(); my $sample_col = $vcf->get_column($rec, 'NA0001');
+    Args 1  : Array pointer returned by next_data_array
+         2  : Column/Sample name
+
+=cut
+
+sub get_column
+{
+    my ($self,$line,$column) = @_;
+    if ( !exists($$self{has_column}{$column}) ) { $self->throw("No such column: [$column]\n"); }
+    my $idx = $$self{has_column}{$column};
+    return $$line[$idx-1];
+}
+
+=head2 get_column_name
+
+    About   : Mapping between zero-based VCF column and its name
+    Usage   : my $vcf = Vcf->new(); $vcf->parse_header(); my $name = $vcf->get_column_name(1); # returns POS
+    Args    : Index of the column (0-based)
+
+=cut
+
+sub get_column_name
+{
+    my ($self,$idx) = @_;
+    if ( $idx >= @{$$self{columns}} ) { $self->throw("The index out of bounds\n"); }
+    return $$self{columns}[$idx];
+}
+
+=head2 get_column_index
+
+    About   : Mapping between VCF column name and its zero-based index
+    Usage   : my $vcf = Vcf->new(); $vcf->parse_header(); my $name = $vcf->get_column_index('POS'); # returns 1
+    Args    : Name of the column
+
+=cut
+
+sub get_column_index
+{
+    my ($self,$column) = @_;
+    if ( !exists($$self{has_column}{$column}) ) { $self->throw("No such column: [$column]\n"); }
+    return $$self{has_column}{$column}-1;
+}
+
+
 #------------------------------------------------
 # Version 3.2 specific functions
 
