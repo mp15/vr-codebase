@@ -2,13 +2,16 @@ package VRTrack::AutoQC;
 
 =head1 NAME
 
-VRTrack::AutoQC - Sequence Tracking Lane Quality Score object
+VRTrack::AutoQC - Sequence Tracking Mapstats AutoQC Test result object
 
 =head1 SYNOPSIS
+    my $autoqc = VRTrack::AutoQC->new($vrtrack, $id);
+
+    $autoqc->id('104');
 
 =head1 DESCRIPTION
 
-An object describing the tracked properties of a qc score for a lane.
+An object describing the properties of an autoqc test result for a mapstats entry.
 
 =head1 AUTHOR
 
@@ -22,8 +25,27 @@ use strict;
 use warnings;
 use Carp qw(cluck confess);
 
-use base qw(VRTrack::Core_obj);
+use base qw(VRTrack::Named_obj);
 
+###############################################################################
+# Class methods
+###############################################################################
+
+=head2 new
+
+  Arg [1]    : database handle to seqtracking database
+  Arg [2]    : autoqc id
+  Example    : my $autoqc = VRTrack::AutoQC->new($vrtrack, $id)
+  Description: Returns AutoQC object by autoqc_id
+  Returntype : VRTrack::AutoQC object
+
+=cut
+
+sub new {
+    my $class = shift;
+    my $self = $class->SUPER::new(@_);
+    return $self;
+}
 
 =head2 fields_dispatch
 
@@ -38,32 +60,33 @@ use base qw(VRTrack::Core_obj);
 sub fields_dispatch {
     my $self = shift;
 
-    my %fields = %{$self->SUPER::fields_dispatch()};
-    %fields = (%fields,
+    my %fields = (
                autoqc_id         => sub { $self->id(@_)},
-               lane_id           => sub { $self->lane_id(@_)},
+	           mapstats_id       => sub { $self->mapstats_id(@_) },
                test              => sub { $self->test(@_)},
                result            => sub { $self->result(@_)},
                reason            => sub { $self->reason(@_)},
-               current_run       => sub { $self->current_run(@_)});
+               );
 
     return \%fields;
 }
 
-
-###############################################################################
-# Class methods
-###############################################################################
-
 =head2 create
 
-  Arg [1]    : vrtrack handle to seqtracking database
-  Arg [2]    : lane id that this relates to
-  Example    : my $file = VRTrack::Lane->create($vrtrack, $name)
-  Description: Class method.  Creates new Lane object in the database.
+  Arg [1]    : database handle to seqtracking database
+  Arg [2]    : autoqc test
+  Arg [3]    : autoqc result
+  Arg [4]    : autoqc reason
+  Example    : my $autoqc = VRTrack::AutoQC->new($vrtrack,$test,$result,$reason);
+  Description: Class method. Creates new AutoQC object in the database.
   Returntype : VRTrack::AutoQC object
 
 =cut
+
+sub create {
+    my ($self, $vrtrack,$test,$result,$reason) = @_;
+    return $self->SUPER::create($vrtrack, test => $test, result=> $result, reason => $reason);
+}
 
 
 ###############################################################################
@@ -72,33 +95,31 @@ sub fields_dispatch {
 
 =head2 id
 
-  Arg [1]    : lane_id
-  Example    : my $lane_id = $lane_qc->lane_id();
-               $lane_qc->lane_id(104);
-  Description: Get/Set for internal db ID of a lane
-  Returntype : integer
+  Arg [1]    : id (optional)
+  Example    : my $id = $autoqc->id();
+               $autoqc->id('104');
+  Description: Get/Set for ID of an autoqc object
+  Returntype : Internal ID integer
 
 =cut
+
 sub test {
     my $self = shift;
     return $self->_get_set('test', 'string', @_);
 }
-sub lane_id {
-    my $self = shift;
-    return $self->_get_set('lane_id', 'number', @_);
-}
 sub result {
     my $self = shift;
-    return $self->_get_set('result', 'string', @_);
+    return $self->_get_set('result', 'number', @_);
 }
 sub reason {
     my $self = shift;
     return $self->_get_set('reason', 'string', @_);
 }
-sub current_run {
+sub mapstats_id {
     my $self = shift;
-    return $self->_get_set('current_run', 'number', @_);
+    return $self->_get_set('mapstats_id', 'number', @_);
 }
+
 
 1;
 

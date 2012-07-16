@@ -1,6 +1,6 @@
 package Vcf;
 
-our $VERSION = 'r735';
+our $VERSION = 'r761';
 
 # http://vcftools.sourceforge.net/specs.html
 # http://www.1000genomes.org/wiki/Analysis/Variant%20Call%20Format/vcf-variant-call-format-version-41
@@ -1648,7 +1648,7 @@ sub has_AGtags
     }
     if ( defined $out ) 
     {
-        for my $key qw(fmtA fmtG infoA infoG) { if ( !exists($$out{$key}) ) { $$out{$key}=[] } }
+        for my $key (qw(fmtA fmtG infoA infoG)) { if ( !exists($$out{$key}) ) { $$out{$key}=[] } }
     }
     return $out;
 }
