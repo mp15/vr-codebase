@@ -28,7 +28,6 @@ use Carp qw(cluck confess);
 use VRTrack::Mapstats;
 use VRTrack::File;
 use VRTrack::Submission;
-use VRTrack::AutoQC;
 use File::Spec;
 
 use base qw(VRTrack::Core_obj
@@ -682,53 +681,6 @@ sub get_file_by_id {
 }
 
 
-=head2 autoqcs
-
-  Arg [1]    : None
-  Example    : my $mappings = $lane->mappings();
-  Description: Returns a ref to an array of the mappings that are associated with this lane.
-  Returntype : ref to array of VRTrack::Mapstats objects
-
-=cut
-
-sub autoqcs {
-    my $self = shift;
-    return $self->_get_child_objects('VRTrack::AutoQC');
-}
-
-
-
-
-=head2 add_autoqc
-
-  Arg [1]    : file name
-  Example    : my $newfile = $lib->add_file('1_s_1.fastq');
-  Description: create a new file, and if successful, return the object
-  Returntype : VRTrack::File object
-
-=cut
-
-sub add_autoqc {
-    my $self = shift;
-    return $self->_add_child_object(undef, 'VRTrack::AutoQC', @_);
-}
-
-
-=head2 autoqc_ids
-
-  Arg [1]    : None
-  Example    : my $file_ids = $lane->file_ids();
-  Description: Returns a ref to an array of the file ids that are associated with this lane
-  Returntype : ref to array of file ids
-
-=cut
-
-sub autoqc_ids {
-    my $self = shift;
-    return $self->_get_child_ids('VRTrack::AutoQC');
-}
-
-
 =head2 descendants
 
   Arg [1]    : none
@@ -739,7 +691,7 @@ sub autoqc_ids {
 =cut
 
 sub _get_child_methods {
-    return qw(files mappings autoqcs);
+    return qw(files mappings);
 }
 
 1;
