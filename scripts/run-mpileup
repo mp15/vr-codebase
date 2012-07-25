@@ -32,8 +32,6 @@ sub new
     $$self{whole_genome_bams} = 1;
     $$self{_sampleconf} = q[
             # Add -P ILLUMINA or -P SLX if the BAMs contain also reads from different platforms. 
-            #   The options -m2 -F0.0005 are intended for hundred of samples, go with the mpileup's
-            #   defaults if you don't have that many.
             mpileup  => '/nfs/users/nfs_p/pd3/sandbox/svn/samtools/singletons/samtools-qsum mpileup -EDVS -C50 -pm3 -F0.2 -d 10000',
             bcftools => '/nfs/users/nfs_p/pd3/sandbox/svn/samtools/singletons/bcftools-qsum view -Ngvm0.99',
             
@@ -286,7 +284,9 @@ sub main
     }
     $self->wait;
     $self->set_limits(runtime=>undef);
-
+    
+    $$self{shuffle_chunks} = 0; # chunks need to be in genomic order from here on
+    
     # Create the merged set if there are more population groups (pooled + two others)
     if ( $$self{merge_pops} && scalar keys %{$$self{pops}} > 2 )
     {
@@ -359,7 +359,7 @@ sub main
 				for my $chr (@chroms) 
 				{ 
 					my $outfile = "$outdir/$pop/$chr.vcf.gz";
-					$self->spawn('concat_vcfs',$outfile,$pop,$chunks); 
+					$self->spawn('concat_vcfs',$outfile,$pop,$chr,$chunks);
 					push @vcfs, $outfile;
 				} 
 			}
@@ -878,7 +878,10 @@ sub write_annot_file
 {
 	my ($self) = @_;
 
-	$$self{annot_file} = "$$self{outdir}/annot.pl";
+    if ( !exists($$self{annot_file}) ) 
+    { 
+        $$self{annot_file} = "$$self{outdir}/annot.pl";
+    }
 	if ( -e $$self{annot_file} ) { return; }
 
 	open(my $fh,'>',$$self{annot_file}) or $self->throw("$$self{annot_file}: $!");
