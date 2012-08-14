@@ -154,6 +154,8 @@ sub run
     my ($self) = @_;
     my @args = @ARGV;
 
+    $$self{_about} = "Working directory: " . getcwd() . "\nCommand line: $0 " . join(' ',@args) . "\n";
+
     # Parse runner system parameters
     while (defined(my $arg=shift(@ARGV)))
     {
@@ -189,8 +191,6 @@ sub run
         unshift(@ARGV,$arg);
         last;
     }
-
-    $$self{_about} = "Working directory: " . getcwd() . "\nCommand line: $0 " . join(' ',@args) . "\n";
 
     # Run the user's module once or multiple times
     while (1)
@@ -228,6 +228,7 @@ sub _read_config
     {
         $self->throw("No config file parameters are accepted by this script.");
     }
+	if ( !-e $config ) { $self->throw("The file does not exist: $config\n"); }
 
     my %x = do "$config";
     while (my ($key,$value) = each %x)
