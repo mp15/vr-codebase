@@ -1,6 +1,6 @@
 package Vcf;
 
-our $VERSION = 'r770';
+our $VERSION = 'r779';
 
 # http://vcftools.sourceforge.net/specs.html
 # http://www.1000genomes.org/wiki/Analysis/Variant%20Call%20Format/vcf-variant-call-format-version-41
@@ -397,6 +397,7 @@ sub _set_version
         }
         elsif ( !($version_line=~/^##fileformat=/i) or !($version_line=~/(\d+(?:\.\d+)?)\s*$/i) ) 
         { 
+			chomp($version_line);
             $self->warn("Could not parse the fileformat version string [$version_line], assuming VCFv$$self{default_version}\n"); 
             undef $version_line;
         }
@@ -771,7 +772,7 @@ sub _header_line_exists
 =head2 remove_header_line
 
     Usage   : $vcf->remove_header_line(key=>'INFO', ID=>'AC')
-    Args    : 
+    Args    :
     Returns : 
 
 =cut
@@ -780,6 +781,7 @@ sub remove_header_line
 {
     my ($self,%args) = @_;
     my $key = $args{key};
+    my %to_be_removed;
     for (my $i=0; $i<@{$$self{header_lines}}; $i++)
     {
         my $line = $$self{header_lines}[$i];
@@ -788,7 +790,12 @@ sub remove_header_line
         {
             if ( $args{ID} ne $$line{ID} ) { next; }
             delete($$self{header}{$key}{$args{ID}});
-            splice(@{$$self{header_lines}},$i,1);
+            splice(@{$$self{header_lines}},$i--,1);
+        }
+        elsif ( scalar keys %args==1 && exists($$self{header}{$key}) )
+        {
+            splice(@{$$self{header_lines}},$i--,1);
+            $to_be_removed{$key} = 1;
         }
         else
         {
@@ -798,9 +805,10 @@ sub remove_header_line
             {
                 if ( $$self{header}{$key}[$j] eq $to_be_removed ) { splice(@{$$self{header}{$key}},$j,1); last; }
             }
-            splice(@{$$self{header_lines}},$i,1);
+            splice(@{$$self{header_lines}},$i--,1);
         }
     }
+    for my $key (keys %to_be_removed) { delete($$self{header}{$key}); }
 }
 
 
@@ -1059,7 +1067,8 @@ sub remove_field
     while ($itag!=$idx)
     {
         $isep = index($string,$sep,$prev_isep);
-        if ( $isep==-1 ) { $self->throw("The index out of range: $string:$isep .. $idx"); }
+        # The index may be out of range, VCFv4.1 allows omitting empty fields
+        if ( $isep==-1 ) { return $string; }
         $prev_isep = $isep+1;
         $itag++;
     }
@@ -1095,6 +1104,7 @@ sub replace_field
     while ($itag!=$idx)
     {
         $isep = index($string,$sep,$prev_isep);
+        # Todo: VCFv4.1 allows omitting empty fields, shouldn't fail here
         if ( $isep==-1 ) { $self->throw("The index out of range: $string:$isep .. $idx"); }
         $prev_isep = $isep+1;
         $itag++;
