@@ -95,6 +95,14 @@ sub new
             assumed_sex       => undef,     # Set to 'F' for females, 'M' males and undef mysql key above if the DB shouldn't be used.
             sample_list       => undef,     # Provide list of samples with sex. In this case, neither mysql nor assumed_sex keys are required.
 
+            # Uncomment to use GATK's Variant Annotator
+            #annotate =>
+            #{
+            #    jar => q[java -Xmx2500m -Xms2500m -server -XX:+UseSerialGC -jar /nfs/users/nfs_m/mercury/src/GenomeAnalysisTK-2.2/GenomeAnalysisTKLite.jar],
+            #    limits   => { memory=>2800 },
+            #    annot => q[-A QualByDepth -A HaplotypeScore -A MappingQualityRankSumTest -A ReadPosRankSumTest -A FisherStrand -A InbreedingCoeff -A DepthOfCoverage],
+            #},
+
             # Do specific regions only (whitespace delimited file with the columns CHR,FROM,TO)
             #   regions => 'regions.list',
 
@@ -280,6 +288,11 @@ sub main
 
     # Call the variants
 	$self->write_annot_file();
+    my $extension = "";
+    if ( exists($$self{annotate}) ) {
+        $extension = ".samtools";
+    }
+
     for my $pop (keys %{$$self{pops}})
     {
         for my $chunk (@$chunks)
@@ -287,12 +300,33 @@ sub main
             my $chr  = $$chunk{chr};
             my $from = $$chunk{from};
             my $to   = $$chunk{to};
-            if ( $self->is_finished("$outdir/$pop/$chr.vcf.gz") ) { next; }
-            $self->spawn('call_variants',"$outdir/$pop/$chr/$chr:$from-$to.vcf.gz",$pop,$chunk);
+            if ( $self->is_finished("$outdir/$pop/$chr$extension.vcf.gz") ) { next; }
+            $self->spawn('call_variants',"$outdir/$pop/$chr/$chr:$from-$to$extension.vcf.gz",$pop,$chunk);
         }
     }
     $self->wait;
     $self->set_limits(runtime=>undef);
+
+    # Optionally annotate variants using GATK
+    if ( exists($$self{annotate}) )
+    {
+        if ( exists($$self{annotate}{limits}) ) { $self->set_limits(%{$$self{annotate}{limits}}); }
+        for my $pop (keys %{$$self{pops}})
+        {
+            for my $chunk (@$chunks)
+            {
+                my $chr  = $$chunk{chr};
+                my $from = $$chunk{from};
+                my $to   = $$chunk{to};
+                if ( $self->is_finished("$outdir/$pop/$chr.vcf.gz") ) { next; }
+                $self->spawn('annotate_variants',"$outdir/$pop/$chr/$chr:$from-$to.vcf.gz",$pop,$chunk);
+            }
+        }
+        $self->wait;
+        # reset limits
+        $self->set_limits(%{$$self{limits}}) unless !exists($$self{limits});
+        $self->set_limits(runtime=>undef);
+    }
     
     $$self{shuffle_chunks} = 0; # chunks need to be in genomic order from here on
     
@@ -859,6 +893,30 @@ sub call_variants
     }
     $self->cmd("$cmd | vcf-annotate --fill-ICF -f $$self{annot_file} | bgzip -c > $outfile.part");
     $self->tabix_part($outfile);
+}
+
+sub annotate_variants
+{
+    my ($self,$outfile,$pop,$chunk) = @_;
+
+    my $outdir = $$self{outdir};
+    my $chr  = $$chunk{chr};
+    my $from = $$chunk{from};
+    my $to   = $$chunk{to};
+
+    my $input_vcf = "$outdir/$pop/$chr/$chr:$from-$to.samtools.vcf.gz";
+    my $bam_list = "$outdir/lists/chr$chr-$pop.list";
+
+    # Run the annotation
+    my $cmd = "$$self{annotate}{jar} -T VariantAnnotator -R $$self{fa_ref} -I $bam_list --variant $input_vcf -L $chr:$from-$to $$self{annotate}{annot} -o $outfile.part.vcf.gz";
+    $self->cmd($cmd);
+
+    # Index the resulting VCF
+    $self->cmd("tabix -p vcf -f $outfile.part.vcf.gz");
+
+    # Rename the output files to mark step complete
+    rename("$outfile.part.vcf.gz.tbi","$outfile.tbi");
+    rename("$outfile.part.vcf.gz",$outfile);
 }
 
 sub tabix_part
