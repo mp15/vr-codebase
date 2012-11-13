@@ -52,8 +52,8 @@ sub is_job_running
     {
         chomp($jid);
         # For backwards compatibility, parse either a single integer or an integer
-        #   followed by \t and path to a LSF output file.
-        if ( !($jid=~/^(\d+)\s*(\S*.*)$/) ) { Utils::error("Uh, could not parse \"$jid\".\n") }
+        #   followed by \t, path to a LSF output file, and the command.
+        if ( !($jid=~/^(\d+)\s*([^\t]*)/) ) { Utils::error("Uh, could not parse \"$jid\".\n") }
 
         my $status = job_in_queue($1,$2);
         if ( $status == $Error ) { $job_running |= $Error; }
@@ -188,7 +188,7 @@ sub parse_bjobs_l
 #
 sub adjust_bsub_options
 {
-    my ($opts, $output_file,$mem_limit) = @_;
+    my ($opts, $output_file) = @_;
 
     my $mem;
     my $queue;
@@ -235,13 +235,18 @@ sub adjust_bsub_options
     }
     
     if (defined $mem) {
-        # at some point an attempt to run this failed due to MEMLIMIT, using
-        # $mem max memory; increase by 1000MB
-        $mem += 1000;
+      # at some point an attempt to run this failed due to MEMLIMIT
+        $mem = calculate_memory_limit($mem);
         
-        if ( !defined $mem_limit ) { $mem_limit = 15_900; }
-        if ( $mem>$mem_limit ) {
-            Utils::error(sprintf "FIXME: Increase memory_limit, more than %.1fGB of memory is required.", $mem_limit/1000);
+        if ($mem>500000) {
+            Utils::error("FIXME: This job cannot be run on the farm, more than 500GB of memory is required.");
+        }
+        elsif($mem>30000)
+        {
+                warn("$output_file: changing queue to hugemem\n");   
+                $opts =~ s/-q normal/-q hugemem/;
+                $opts =~ s/-q long/-q hugemem/;
+                if ( !($opts=~/-q/) ) { $opts .= ' -q hugemem'; }
         }
         
         # adjust the command line to include higher memory reservation, but only
@@ -278,6 +283,59 @@ sub adjust_bsub_options
     }
 
     return $opts;
+}
+
+
+=head2 past_limits
+
+    Arg [1]     : LSF job name (without the ".o" suffix)
+    Description : Find out status and limits of the previous run
+    Returntype  : Hash 
+
+=cut
+
+sub past_limits
+{
+    my ($job_name) = @_; 
+    if ( ! -e "$job_name.o" ) { return (); }
+    my %out;
+    my $parser = VertRes::Parser::LSF->new(file=>"$job_name.o");
+    my $n = $parser->nrecords() || 0;
+    for (my $i=0; $i<$n; $i++)
+    {
+        my $status = $parser->get('status',$i) || next;
+        my $mem = $parser->get('memory',$i);
+        if ( !exists($out{memory}) or $out{memory}<$mem )
+        {
+            $out{memory} = $mem;
+            if ( $status eq 'MEMLIMIT' ) { $out{MEMLIMIT} = $mem; }
+            else { delete($out{MEMLIMIT}); }
+        }
+    }
+    return %out;
+}
+
+
+=head2 calculate_memory_limit
+
+    Arg [1]     : memory in mega bytes for previously failed job
+    Description : Increases the memory by a set minimum or by a percentage, which ever is greater
+    Returntype  : Int
+
+=cut
+sub calculate_memory_limit
+{
+  my ($mem) = @_; 
+  my $minimum_memory_increase = 1000;
+  my $memory_increase_percentage = 0.3;
+
+  my $updated_memory_limit = $mem*(1+$memory_increase_percentage);
+  if($updated_memory_limit < $mem + $minimum_memory_increase)
+  {
+    $updated_memory_limit =  $mem + $minimum_memory_increase;
+  }
+  
+  return int($updated_memory_limit);
 }
 
 
@@ -340,14 +398,14 @@ sub run
 
     if($$options{logfile_output_directory})
     {
-      my $log_dir = $$options{logfile_output_directory}."/".time().'_'.int( rand(1000));
-      if ( !-e $log_dir ) { Utils::CMD("mkdir -p $log_dir"); }
-      $lsf_output_file = $log_dir.'/'.$lsf_output_file;
-      $lsf_error_file  = $log_dir.'/'.$lsf_error_file;
+        my $log_dir = $$options{logfile_output_directory}."/".time().'_'.int( rand(1000));
+        if ( !-e $log_dir ) { Utils::CMD("mkdir -p $log_dir"); }
+        $lsf_output_file = $log_dir.'/'.$lsf_output_file;
+        $lsf_error_file  = $log_dir.'/'.$lsf_error_file;
     }
 
     # Check if memory or queue should be changed (and change it)
-    $bsub_opts = adjust_bsub_options($bsub_opts, $lsf_output_file,$$options{memory_limit});
+    $bsub_opts = adjust_bsub_options($bsub_opts, $lsf_output_file);
     my $cmd = "bsub -J $job_name -e $lsf_error_file -o $lsf_output_file $bsub_opts '$bsub_cmd'";
 
     my @out = Utils::CMD($cmd,$options);
@@ -357,8 +415,9 @@ sub run
     }
     my $jid  = $1;
     my $mode = exists($$options{append}) && !$$options{append} ? '>' : '>>';
+    if ( !($lsf_output_file=~m{^/}) ) { $lsf_output_file = "$work_dir/$lsf_output_file"; }
     open(my $jids_fh, $mode, $jids_file) or Utils::error("$jids_file: $!");
-    print $jids_fh "$jid\t$work_dir/$lsf_output_file\n";
+    print $jids_fh "$jid\t$lsf_output_file\t$cmd\n";
     close $jids_fh;
 
     if ( !$$options{dont_wait} )
@@ -371,12 +430,12 @@ sub run
         my $status   = $No;
         while ($max_wait>0)
         {
-            $status = job_in_queue($jid,"$work_dir/$lsf_output_file");
+            $status = job_in_queue($jid,"$lsf_output_file");
             if ( $status!=$No ) { last }
             sleep(2);
             $max_wait-=2;
         }
-        if ( $status==$No ) { Utils::error("The job $1 $work_dir/$lsf_output_file still not in queue??\n"); }
+        if ( $status==$No ) { Utils::error("The job $1 $lsf_output_file still not in queue??\n"); }
     }
 
     if ( $work_dir ) { chdir($cwd) or Utils::error("chdir \"$cwd\": $!"); }
