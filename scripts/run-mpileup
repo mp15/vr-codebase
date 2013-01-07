@@ -134,6 +134,8 @@ sub new
             #     ],
             #     filter_snps   => q[ -T ApplyRecalibration --ts_filter_level 99.85 --mode SNP ],
             #     filter_indels => q[ -T ApplyRecalibration --ts_filter_level 99.85 --mode INDEL ],
+            #     tranche_min_snps => 95, tranche_max_snps => 100, tranche_step_snps => 0.1,
+            #     tranche_min_indels => 10, tranche_max_indels => 100, tranche_step_indels => 5,
             #     limits   => { runtime=>24*60, memory=>5_000 },
             # },
     ]."\n";
@@ -1099,12 +1101,33 @@ sub run_vqsr
     my $conf = $$self{vqsr_filtering};
     my $input = $concat;
     my $output;
-    my $tranches;
-    for (my $i=95; $i<=100; $i+=0.1) { $tranches .= sprintf(" -tranche %.1f",$i); }
+    # set up tranches for snps and indels
+    my $snp_tranches;
+    my $indel_tranches;
+
+    my $snp_tranche_min = 95;
+    if ( exists($$conf{tranche_min_snps}) ) { $snp_tranche_min = $$conf{tranche_min_snps}; }
+    my $snp_tranche_max = 100;
+    if ( exists($$conf{tranche_max_snps}) ) { $snp_tranche_max = $$conf{tranche_max_snps}; }
+    my $snp_tranche_step = 0.1;
+    if ( exists($$conf{tranche_step_snps}) ) { $snp_tranche_step = $$conf{tranche_step_snps}; }
+
+    for (my $i=$snp_tranche_min; $i<=$snp_tranche_max; $i+=$snp_tranche_step) { $snp_tranches .= sprintf(" -tranche %.1f",$i); }
+
+    my $indel_tranche_min = 95;
+    if ( exists($$conf{tranche_min_indels}) ) { $indel_tranche_min = $$conf{tranche_min_indels}; }
+    my $indel_tranche_max = 100;
+    if ( exists($$conf{tranche_max_indels}) ) { $indel_tranche_max = $$conf{tranche_max_indels}; }
+    my $indel_tranche_step = 0.1;
+    if ( exists($$conf{tranche_step_indels}) ) { $indel_tranche_step = $$conf{tranche_step_indels}; }
+
+    for (my $i=$indel_tranche_min; $i<=$indel_tranche_max; $i+=$indel_tranche_step) { $indel_tranches .= sprintf(" -tranche %.1f",$i); }
+
+
     if ( exists($$conf{recal_snps}) )
     {
         $output = "$tmp.snps.vcf.gz";
-        $self->cmd("$$conf{jar} $$conf{recal_snps} -R $$self{fa_ref} --input $input -recalFile $tmp.snps.csv -tranchesFile $tmp.snps.tranches $tranches");
+        $self->cmd("$$conf{jar} $$conf{recal_snps} -R $$self{fa_ref} --input $input -recalFile $tmp.snps.csv -tranchesFile $tmp.snps.tranches $snp_tranches");
         $self->cmd("$$conf{jar} $$conf{filter_snps} -R $$self{fa_ref} --input $input -recalFile $tmp.snps.csv -tranchesFile $tmp.snps.tranches -o $output");
         $self->cmd("tabix $output");
         $input = $output;
@@ -1112,7 +1135,7 @@ sub run_vqsr
     if ( exists($$conf{recal_indels}) )
     {
         $output = "$tmp.indels.vcf.gz";
-        $self->cmd("$$conf{jar} $$conf{recal_indels} -R $$self{fa_ref} --input $input -recalFile $tmp.indels.csv -tranchesFile $tmp.indels.tranches $tranches");
+        $self->cmd("$$conf{jar} $$conf{recal_indels} -R $$self{fa_ref} --input $input -recalFile $tmp.indels.csv -tranchesFile $tmp.indels.tranches $indel_tranches");
         $self->cmd("$$conf{jar} $$conf{filter_indels} -R $$self{fa_ref} --input $input -recalFile $tmp.indels.csv -tranchesFile $tmp.indels.tranches -o $output");
         $self->cmd("tabix $output");
         $input = $output;
