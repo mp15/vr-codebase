@@ -30,7 +30,7 @@ sub new
     $$self{debug_chunks} = 0;
     $$self{merge_pops} = 0;
     $$self{whole_genome_bams} = 1;
-	$$self{config_version} = '47417d8';
+	$$self{config_version} = '47417d8-hgi-2';
     $$self{_sampleconf} = q[
             # For sanity checking that your config file is not obsolete. Update the version key in your 
             #  config file to get rid of the warnings.
@@ -42,6 +42,7 @@ sub new
             
             bams     => '/lustre/scratch105/projects/g1k/MAIN-ANALYSIS/20101123-whole-genome-calling/merge_across_bams.list',
             fa_ref   => '/lustre/scratch105/projects/g1k/ref/main_project/human_g1k_v37.fasta',
+            fa_vcf_dict => '/lustre/scratch105/projects/g1k/ref/main_project/human_g1k_v37.vcfdict',
             mysql    => 'mysql -sN -uXXX -pXXX -hmcs10 -P 3306 g1k_meta',   # To get the sex. Optional when assumed_sex or sample_list is defined below.
 
             limits   => { runtime=>24*60 },
@@ -104,6 +105,7 @@ sub new
             #},
 
             htscmd => 'htscmd',
+            jar => q[java -Xmx2500m -Xms2500m -server -XX:+UseSerialGC -jar /nfs/users/nfs_m/mercury/src/GenomeAnalysisTK-2.2/GenomeAnalysisTKLite.jar],
 
             # Uncomment to use GATK's Unified Genotyper to create Annotations
             #unified =>
@@ -136,6 +138,7 @@ sub new
             #             --maxGaussians 4
             #             -an MSD -an MDV -an MSQ -an ICF -an DP -an SB -an VDB
             #     ],
+            #     recal_snps_limits   => { runtime=>24*60, memory=>5_000 },
             #     recal_indels => q[
             #             -T VariantRecalibrator --mode INDEL -l INFO
             #             -resource:mills,VCF,known=true,training=true,truth=true,prior=12.0 /lustre/scratch105/projects/g1k/ref/broad_resources_b37/Mills_and_1000G_gold_standard.indels.b37.sites.vcf.gz
@@ -144,6 +147,7 @@ sub new
             #             --maxGaussians 4
             #             -an MSD -an MDV -an MSQ -an ICF -an DP -an SB -an VDB
             #     ],
+            #     recal_indels_limits => { runtime=>24*60, memory=>5_000 },
             #     filter_snps   => q[ -T ApplyRecalibration --ts_filter_level 99.85 --mode SNP ],
             #     filter_indels => q[ -T ApplyRecalibration --ts_filter_level 99.85 --mode INDEL ],
             #     tranche_min_snps => 95, tranche_max_snps => 100, tranche_step_snps => 0.1,
@@ -325,18 +329,34 @@ sub main
     }
     $self->wait;
     $self->set_limits(runtime=>undef);
-    for my $pop (keys %{$$self{pops}})
-    {
-        for my $chunk (@$chunks)
+    if ( exists($$self{left_align}) ) {
+        for my $pop (keys %{$$self{pops}})
         {
-            my $chr  = $$chunk{chr};
-            my $from = $$chunk{from};
-            my $to   = $$chunk{to};
-            if ( $self->is_finished("$outdir/$pop/$chr$extension.vcf.gz") ) { next; }
-            $self->spawn('left_align',"$outdir/$pop/$chr/$chr:$from-$to$extension.vcf.gz",$pop,$chunk);
+            for my $chunk (@$chunks)
+            {
+                my $chr  = $$chunk{chr};
+                my $from = $$chunk{from};
+                my $to   = $$chunk{to};
+                if ( $self->is_finished("$outdir/$pop/$chr$extension.vcf.gz") ) { next; }
+                $self->spawn('left_align',"$outdir/$pop/$chr/$chr:$from-$to$extension.vcf.gz",$pop,$chunk);
+            }
+        }
+    $self->wait;
+    } else {
+        for my $pop (keys %{$$self{pops}})
+        {
+            for my $chunk (@$chunks)
+            {
+                my $chr  = $$chunk{chr};
+                my $from = $$chunk{from};
+                my $to   = $$chunk{to};
+                my $file = "$outdir/$pop/$chr/$chr:$from-$to$extension.vcf.gz"; 
+                if ( -e $file ) { next; }
+                Utils::relative_symlink("$outdir/$pop/$chr/$chr:$from-$to.intermid.vcf.gz",$file);
+            }
         }
     }
-    $self->wait;
+
 
     if ( exists($$self{annotate}) ) # Optionally annotate variants using GATK VariantAnnotator
     {
@@ -370,7 +390,7 @@ sub main
                 my $from = $$chunk{from};
                 my $to   = $$chunk{to};
                 if ( $self->is_finished("$outdir/$pop/$chr.sites.vcf.gz") ) { next; }
-                $self->spawn('unified_annotate_variants',"$outdir/$pop/$chr/$chr:$from-$to.sites.vcf.gz",$pop,$chunk);
+                $self->spawn('unified_annotate_variants',"$outdir/$pop/$chr/$chr:$from-$to.sites.done",$pop,$chunk);
             }
         }
         $self->wait;
@@ -410,62 +430,151 @@ sub main
     if ( exists($$self{vqsr_filtering}) ) 
     {  
         # Create whole genome file with sites only, apply filtering and VQSR. 
-        my $ext = "";
-        if ( exists($$self{unified}) ) { $ext = ".sites"; }
         for my $pop (keys %{$$self{pops}})
         {
-            $self->spawn('create_sites',"$outdir/$pop/vqsr.sites.raw.vcf.gz",$pop,$chunks,$ext);
+            my $snp_chunks_list = "$outdir/$pop/concat_snp_sites.list";
+            my $indel_chunks_list = "$outdir/$pop/concat_indel_sites.list";
+
+            $self->spawn('create_chunk_list',$snp_chunks_list,$pop,".",$chunks,".asnps");
+            $self->spawn('create_chunk_list',$indel_chunks_list,$pop,".",$chunks,".aindels");
         }
         $self->wait;
+
+        for my $pop (keys %{$$self{pops}})
+        {
+	    my $snp_chunks_list = "$outdir/$pop/concat_snp_sites.list";
+            my $indel_chunks_list = "$outdir/$pop/concat_indel_sites.list";
+
+            $self->spawn('create_raw_sites',"$outdir/$pop/vqsr.sites.snps.raw.vcf.gz",$pop,$snp_chunks_list);
+            $self->spawn('create_raw_sites',"$outdir/$pop/vqsr.sites.indels.raw.vcf.gz",$pop,$indel_chunks_list);
+        }
+        $self->wait;
+
         if ( exists($$self{vqsr_filtering}{limits}) ) { $self->set_limits(%{$$self{vqsr_filtering}{limits}}); }
         for my $pop (keys %{$$self{pops}})
         {
-            $self->spawn('run_vqsr',"$outdir/$pop/vqsr.sites.vcf.gz","$outdir/$pop/vqsr.sites.raw.vcf.gz");
+            if ( exists($$self{vqsr_filtering}{recal_snps}) )
+            {
+                if ( exists($$self{vqsr_filtering}{recal_snps_limits}) ) { $self->set_limits(%{$$self{vqsr_filtering}{recal_snps_limits}}); }
+                $self->spawn('run_vqsr_snp',"$outdir/$pop/vqsr.sites.snps.vcf.gz","$outdir/$pop/vqsr.sites.snps.raw.vcf.gz");
+            }
+            if ( exists($$self{vqsr_filtering}{recal_indels}) )
+            {
+                if ( exists($$self{vqsr_filtering}{recal_indels_limits}) ) { $self->set_limits(%{$$self{vqsr_filtering}{recal_indels_limits}}); }
+                $self->spawn('run_vqsr_indel',"$outdir/$pop/vqsr.sites.indels.vcf.gz","$outdir/$pop/vqsr.sites.indels.raw.vcf.gz");
+            }
         }
         $self->wait;
         $self->set_limits(memory=>undef);
+        # Create list of files to combine for output
         for my $pop (keys %{$$self{pops}})
-		{
-			if ( $$self{merge_chroms} ) 
-			{ 
-				my $outfile = "$outdir/$pop/all.vqsr.vcf.gz";
-				$self->spawn('combine_vqsr',$outfile,"$outdir/$pop/vqsr.sites.vcf.gz",$pop,'.');
-				push @vcfs, $outfile;
-			}
-			else 
-			{ 
-				for my $chr (@chroms) 
-				{ 
-					my $outfile = "$outdir/$pop/$chr.vqsr.vcf.gz";
-					$self->spawn('combine_vqsr',$outfile,"$outdir/$pop/vqsr.sites.vcf.gz",$pop,$chr);
-					push @vcfs, $outfile;
-				}
-			}
-		}
+        {
+            if ( $$self{merge_chroms} )
+            {
+                my $chunks_list = "$outdir/$pop/concat_output.list";
+                $self->spawn('create_chunk_list',$chunks_list,$pop,".",$chunks,"");
+            }
+            else
+            {
+                for my $chr (@chroms)
+                {
+                    my $chunks_list = "$outdir/$pop/concat_output.$chr.list";
+                    $self->spawn('create_chunk_list',$chunks_list,$pop,$chr,$chunks,"");
+                }
+            }
+        }
         $self->wait;
-    }
-    else
-    {
-		# Apply filtering, no VQSR
-		for my $pop (keys %{$$self{pops}})
+
+        $self->set_limits(runtime=>runtime=>60);
+        for my $pop (keys %{$$self{pops}})
 		{
 			if ( $$self{merge_chroms} ) 
 			{ 
 				my $outfile = "$outdir/$pop/all.vcf.gz";
-				$self->spawn('concat_vcfs',$outfile,$pop,'.',$chunks); 
-				push @vcfs, $outfile;
+				my $chunks_list = "$outdir/$pop/concat_output.list";
+                                $self->spawn('concat_vcfs',$outfile,$chunks_list);
+#                               $self->spawn('combine_vqsr_ext',$outfile,"$outdir/$pop/vqsr.sites.snps.vcf.gz","$outdir/$pop/vqsr.sites.indels.vcf.gz",$chunks_list);
 			}
 			else 
 			{ 
 				for my $chr (@chroms) 
 				{ 
 					my $outfile = "$outdir/$pop/$chr.vcf.gz";
-					$self->spawn('concat_vcfs',$outfile,$pop,$chr,$chunks);
-					push @vcfs, $outfile;
-				} 
+                                        my $chunks_list = "$outdir/$pop/concat_output.$chr.list";
+                                        
+					$self->spawn('concat_vcfs',$outfile,$chunks_list);
+#					$self->spawn('combine_vqsr_ext',$outfile,"$outdir/$pop/vqsr.sites.snps.vcf.gz","$outdir/$pop/vqsr.sites.indels.vcf.gz",$chunks_list);
+				}
 			}
 		}
-		$self->wait;
+        $self->wait;
+
+        if ( exists($$self{vqsr_filtering}{limits}) ) { $self->set_limits(%{$$self{vqsr_filtering}{limits}}); }
+        for my $pop (keys %{$$self{pops}})
+                {
+                        if ( $$self{merge_chroms} )
+                        {
+                                my $outfile = "$outdir/$pop/all.vqsr.vcf.gz";
+                                $self->spawn('apply_vqsr',$outfile,"$outdir/$pop/all.vcf.gz","$outdir/$pop/vqsr.sites.snps.vcf.gz", "$outdir/$pop/vqsr.sites.indels.vcf.gz");
+				push @vcfs, $outfile;
+                        }
+                        else
+                        {
+                                for my $chr (@chroms)
+                                {
+                                        my $outfile = "$outdir/$pop/$chr.vqsr.vcf.gz";
+
+                                        $self->spawn('apply_vqsr',$outfile,"$outdir/$pop/$chr.vcf.gz","$outdir/$pop/vqsr.sites.snps.vcf.gz", "$outdir/$pop/vqsr.sites.indels.vcf.gz");
+					push @vcfs, $outfile;
+                                }
+                        }
+                }
+        $self->wait;
+        $self->set_limits(memory=>undef);
+
+    }
+    else
+    {
+        # Create list of files to combine for output
+        for my $pop (keys %{$$self{pops}})
+        {
+            if ( $$self{merge_chroms} )
+            {
+                my $chunks_list = "$outdir/$pop/concat_output.list";
+                $self->spawn('create_chunk_list',$chunks_list,$pop,".",$chunks,"");
+            }
+            else
+            {
+                for my $chr (@chroms) 
+                { 
+                    my $chunks_list = "$outdir/$pop/concat_output.$chr.list";
+                    $self->spawn('create_chunk_list',$chunks_list,$pop,$chr,$chunks,"");
+                }
+            }
+        }
+        $self->wait;
+        # Apply filtering, no VQSR
+        for my $pop (keys %{$$self{pops}})
+        {
+            if ( $$self{merge_chroms} ) 
+            { 
+                my $chunks_list = "$outdir/$pop/concat_output.list";
+                my $outfile = "$outdir/$pop/all.vcf.gz";
+                $self->spawn('concat_vcfs',$outfile,$chunks_list);
+                push @vcfs, $outfile;
+            }
+            else 
+            { 
+                for my $chr (@chroms) 
+                {
+                    my $chunks_list = "$outdir/$pop/concat_output.$chr.list";
+                    my $outfile = "$outdir/$pop/$chr.vcf.gz";
+                    $self->spawn('concat_vcfs',$outfile,$chunks_list);
+                    push @vcfs, $outfile;
+                } 
+            }
+        }
+        $self->wait;
     }
 
     # Run summary stats
@@ -949,7 +1058,7 @@ sub call_variants
         my $bam_list = "$outdir/lists/chr$chr-$pop.list";
         $cmd = "$$self{mpileup} -ug -r $chr:$from-$to -b $bam_list -f $$self{fa_ref} | $$self{bcftools} -s $sample_list -";
     }
-    if ( $$self{annotate} )
+    if ( exists($$self{unified}) || exists($$self{annotate}) )
     {
         #do nothing samtools and gatk annotations conflict at present
     }
@@ -973,7 +1082,7 @@ sub left_align
     my $intermid = "$outdir/$pop/$chr/$chr:$from-$to.intermid.vcf.gz";
 
     # Left Align our input INDELs
-    my $la_cmd = "$$self{unified}{jar} -T LeftAlignVariants -R $$self{fa_ref} --variant $intermid -o $outfile.part.vcf.gz";
+    my $la_cmd = "$$self{jar} -T LeftAlignVariants -U LENIENT_VCF_PROCESSING -R $$self{fa_ref} --variant $intermid -o $outfile.part.vcf.gz";
     $self->cmd($la_cmd);
 
     $self->cmd("tabix -p vcf -f $outfile.part.vcf.gz");
@@ -995,7 +1104,7 @@ sub annotate_variants
     my $bam_list = "$outdir/lists/chr$chr-$pop.list";
 
     # Run the annotation
-    my $cmd = "$$self{annotate}{jar} -T VariantAnnotator -R $$self{fa_ref} -I $bam_list --variant $input_vcf -L $chr:$from-$to $$self{annotate}{annot} -o $outfile.part.vcf.gz";
+    my $cmd = "$$self{jar} -T VariantAnnotator -R $$self{fa_ref} -I $bam_list --variant $input_vcf -L $chr:$from-$to $$self{annotate}{annot} -o $outfile.part.vcf.gz";
     $self->cmd($cmd);
 
     # Index the resulting VCF
@@ -1021,16 +1130,28 @@ sub unified_annotate_variants
     my $annot_snp_vcf = "$outdir/$pop/$chr/$chr:$from-$to.asnps.vcf.gz";
     my $annot_indel_vcf = "$outdir/$pop/$chr/$chr:$from-$to.aindels.vcf.gz";
     my $bam_list = "$outdir/lists/chr$chr-$pop.list";
+    my $fa_vcf_dict = $$self{fa_vcf_dict};
 
     # split our input into SNPs and INDELs
-    my $split_snp_cmd = "$$self{htscmd} vcfview -SIG $input_vcf | bgzip -c > $split_snp_vcf.part";
+    # cut to remove format field from this version of htscmd vcfview
+    my $split_snp_cmd;
+    my $split_indel_cmd;
+
+    if ( defined($fa_vcf_dict) ) {
+        $split_snp_cmd = "$$self{htscmd} vcfview -SIGt ${fa_vcf_dict} $input_vcf | cut -f 1-8 | bgzip -c > $split_snp_vcf.part";
+        $split_indel_cmd = "$$self{htscmd} vcfview -SNGt ${fa_vcf_dict} $input_vcf | cut -f 1-8 | bgzip -c > $split_indel_vcf.part";
+    }
+    else {
+        $split_snp_cmd = "$$self{htscmd} vcfview -SIG $input_vcf | cut -f 1-8 | bgzip -c > $split_snp_vcf.part";
+        $split_indel_cmd = "$$self{htscmd} vcfview -SNG $input_vcf | cut -f 1-8 | bgzip -c > $split_indel_vcf.part";
+    }
+	
     $self->cmd($split_snp_cmd);
     $self->cmd("tabix -p vcf -f $split_snp_vcf.part");
 
     rename("$split_snp_vcf.part.tbi", "$split_snp_vcf.tbi");
     rename("$split_snp_vcf.part", "$split_snp_vcf");
 
-    my $split_indel_cmd = "$$self{htscmd} vcfview -SNG $input_vcf | bgzip -c > $split_indel_vcf.part";
     $self->cmd($split_indel_cmd);
     $self->cmd("tabix -p vcf -f $split_indel_vcf.part");
 
@@ -1038,7 +1159,8 @@ sub unified_annotate_variants
     rename("$split_indel_vcf.part", "$split_indel_vcf");
 
     # Run the annotation
-    my $ug_snp_cmd = "$$self{unified}{jar} -T UnifiedGenotyper -glm SNP -R $$self{fa_ref} -I $bam_list --alleles $split_snp_vcf -L $chr:$from-$to $$self{unified}{opts} $$self{unified}{annot} -o $annot_snp_vcf.part.vcf.gz";
+    my $jar = $$self{unified}{jar};
+    my $ug_snp_cmd = "${jar} -T UnifiedGenotyper -glm SNP -R $$self{fa_ref} -I $bam_list --alleles $split_snp_vcf -L $chr:$from-$to $$self{unified}{opts} $$self{unified}{annot} -o $annot_snp_vcf.part.vcf.gz";
     $self->cmd($ug_snp_cmd);
 
     # Index the resulting VCF
@@ -1049,7 +1171,7 @@ sub unified_annotate_variants
     rename("$annot_snp_vcf.part.vcf.gz",$annot_snp_vcf);
 
     # Run the annotation
-    my $ug_indel_cmd = "$$self{unified}{jar} -T UnifiedGenotyper -glm INDEL -R $$self{fa_ref} -I $bam_list --alleles $split_indel_vcf -L $chr:$from-$to $$self{unified}{opts} $$self{unified}{annot} -o $annot_indel_vcf.part.vcf.gz";
+    my $ug_indel_cmd = "${jar} -T UnifiedGenotyper -glm INDEL -R $$self{fa_ref} -I $bam_list --alleles $split_indel_vcf -L $chr:$from-$to $$self{unified}{opts} $$self{unified}{annot} -o $annot_indel_vcf.part.vcf.gz";
     $self->cmd($ug_indel_cmd);
 
     # Index the resulting VCF
@@ -1059,10 +1181,9 @@ sub unified_annotate_variants
     rename("$annot_indel_vcf.part.vcf.gz.tbi","$annot_indel_vcf.tbi");
     rename("$annot_indel_vcf.part.vcf.gz",$annot_indel_vcf);
 
-    # Merge the two back together and create a sites file
-    my $merge_cmd = "vcf-merge $annot_snp_vcf $annot_indel_vcf| cut -f 1-8 | bgzip -c > $outfile.part";
+    # Mark job done
+    my $merge_cmd = "touch $outfile";
     $self->cmd($merge_cmd);
-    $self->tabix_part($outfile);
 }
 
 sub tabix_part
@@ -1198,59 +1319,45 @@ sub chunk_sort
 
 sub concat_vcfs
 {
-	my ($self,$outfile,$pop,$chr,$chunks) = @_;
-
-	my $outdir = $$self{outdir};
-	my $chunks_list = "$outdir/$pop/$chr/concat.list";
-
-	open(my $fh,'>',$chunks_list) or $self->throw("$chunks_list: $!");
-	for my $chunk (sort chunk_sort @$chunks)
-	{
-		if ( $chr ne '.' && $$chunk{chr} ne $chr ) { next; }
-		my $from = $$chunk{from};
-		my $to   = $$chunk{to};
-		print $fh "$outdir/$pop/$$chunk{chr}/$$chunk{chr}:$from-$to.vcf.gz\n";
-	}
-	close($fh) or $self->throw("close $chunks_list");
+	my ($self,$outfile,$chunks_list) = @_;
 
 	my $filter = exists($$self{filter}) ? "| $$self{filter}" : '';
 	$self->cmd("vcf-concat -p -f $chunks_list $filter | bgzip -c > $outfile.part");
 	$self->tabix_part($outfile);
 }
 
-sub create_sites
+sub create_chunk_list
 {
-    my ($self,$outfile,$pop,$chunks,$extension) = @_;
-
+    my ($self,$outfile,$pop,$chrom,$chunks,$extension) = @_;
     my $outdir = $$self{outdir};
-    my $chunks_list = "$outdir/$pop/concat.list";
 
-    open(my $fh,'>',$chunks_list) or $self->throw("$chunks_list: $!");
-	for my $chunk (@$chunks)
+    open(my $fh,'>',$outfile) or $self->throw("$outfile: $!");
+    for my $chunk (@$chunks)
     {
-		my $chr  = $$chunk{chr};
-		my $from = $$chunk{from};
-		my $to   = $$chunk{to};
+        my $chr  = $$chunk{chr};
+        my $from = $$chunk{from};
+        my $to   = $$chunk{to};
+        if ( $chrom ne '.' && $chr ne $chrom ) { next; }
         print $fh "$outdir/$pop/$chr/$chr:$from-$to$extension.vcf.gz\n";
     }
-    close($fh) or $self->throw("close $chunks_list");
-
-    if ( ! -e $outfile )
-    {
-        $self->cmd("vcf-concat -p -f $chunks_list | cut -f 1-8 | bgzip -c > $outfile.part");
-        $self->tabix_part($outfile);
-    }
+    close($fh) or $self->throw("close $outfile");
 }
 
-sub run_vqsr
+sub create_raw_sites
+{
+    my ($self,$outfile,$pop,$chunks_list) = @_;
+
+    $self->cmd("vcf-concat -p -f $chunks_list | cut -f 1-8 | bgzip -c > $outfile.part");
+    $self->tabix_part($outfile);
+}
+
+sub run_vqsr_snp
 {
     my ($self,$outfile,$input) = @_;
-    my $tmp = $outfile; $tmp =~ s/\.vcf\.gz$//;
     my $conf = $$self{vqsr_filtering};
-    my $output;
+    my $tmp = $outfile; $tmp =~ s/\.vcf\.gz$//;
     # set up tranches for snps and indels
     my $snp_tranches;
-    my $indel_tranches;
 
     my $snp_tranche_min = 95;
     if ( exists($$conf{tranche_min_snps}) ) { $snp_tranche_min = $$conf{tranche_min_snps}; }
@@ -1261,6 +1368,21 @@ sub run_vqsr
 
     for (my $i=$snp_tranche_min; $i<=$snp_tranche_max; $i+=$snp_tranche_step) { $snp_tranches .= sprintf(" -tranche %.1f",$i); }
 
+    $self->cmd("$$conf{jar} $$conf{recal_snps} --ignore_filter LowQual -R $$self{fa_ref} --input $input -recalFile $outfile.part.vcf.gz -tranchesFile $tmp.tranches $snp_tranches");
+    $self->cmd("tabix -p vcf -f $outfile.part.vcf.gz");
+
+    rename("$outfile.part.vcf.gz.tbi", "$outfile.tbi");
+    rename("$outfile.part.vcf.gz", "$outfile");
+}
+
+sub run_vqsr_indel
+{
+    my ($self,$outfile,$input) = @_;
+    my $conf = $$self{vqsr_filtering};
+    my $tmp = $outfile; $tmp =~ s/\.vcf\.gz$//;
+    # set up tranches for snps and indels
+    my $indel_tranches;
+
     my $indel_tranche_min = 95;
     if ( exists($$conf{tranche_min_indels}) ) { $indel_tranche_min = $$conf{tranche_min_indels}; }
     my $indel_tranche_max = 100;
@@ -1270,35 +1392,34 @@ sub run_vqsr
 
     for (my $i=$indel_tranche_min; $i<=$indel_tranche_max; $i+=$indel_tranche_step) { $indel_tranches .= sprintf(" -tranche %.1f",$i); }
 
+    $self->cmd("$$conf{jar} $$conf{recal_indels} --ignore_filter LowQual -R $$self{fa_ref} --input $input -recalFile $outfile.part.vcf.gz -tranchesFile $tmp.tranches $indel_tranches");
+    $self->cmd("tabix -p vcf -f $outfile.part.vcf.gz");
 
-    if ( exists($$conf{recal_snps}) )
-    {
-        $output = "$tmp.snps.vcf.gz";
-        $self->cmd("$$conf{jar} $$conf{recal_snps} -R $$self{fa_ref} --input $input -recalFile $tmp.snps.csv -tranchesFile $tmp.snps.tranches $snp_tranches");
-        $self->cmd("$$conf{jar} $$conf{filter_snps} -R $$self{fa_ref} --input $input -recalFile $tmp.snps.csv -tranchesFile $tmp.snps.tranches -o $output");
-        $self->cmd("tabix $output");
-        $input = $output;
-    }
-    if ( exists($$conf{recal_indels}) )
-    {
-        $output = "$tmp.indels.vcf.gz";
-        $self->cmd("$$conf{jar} $$conf{recal_indels} -R $$self{fa_ref} --input $input -recalFile $tmp.indels.csv -tranchesFile $tmp.indels.tranches $indel_tranches");
-        $self->cmd("$$conf{jar} $$conf{filter_indels} -R $$self{fa_ref} --input $input -recalFile $tmp.indels.csv -tranchesFile $tmp.indels.tranches -o $output");
-        $self->cmd("tabix $output");
-        $input = $output;
-    }
-    if ( !defined $output ) { $self->throw("Neither recal_snps nor recal_indels key defined in vqsr_filtering?"); }
+    rename("$outfile.part.vcf.gz.tbi", "$outfile.tbi");
+    rename("$outfile.part.vcf.gz", "$outfile");
+}
 
-	if ( !exists($$self{filter}) )
-	{
-		Utils::relative_symlink($input,$outfile);
-		Utils::relative_symlink("$input.tbi","$outfile.tbi");
-	}
-	else
-	{
-		$self->cmd("zcat $input | $$self{filter} | bgzip -c > $outfile.part");
-		$self->tabix_part($outfile);
-	}
+sub apply_vqsr
+{
+    my ($self,$outfile,$input,$vqsr_snp,$vqsr_indel) = @_;
+    my $conf = $$self{vqsr_filtering};
+    my $tmp_snp = $vqsr_snp; $tmp_snp =~ s/\.vcf\.gz$//;
+    my $tmp_indel = $vqsr_indel; $tmp_indel =~ s/\.vcf\.gz$//;
+
+    $self->cmd("$$conf{jar} $$conf{filter_snps} -R $$self{fa_ref} --input $input -recalFile $vqsr_snp -tranchesFile $tmp_snp.tranches -o $outfile.part.vcf.gz");
+    $self->cmd("tabix -p vcf -f $outfile.part.vcf.gz");
+
+    rename("$outfile.part.vcf.gz.tbi", "${outfile}_snp.vcf.gz.tbi");
+    rename("$outfile.part.vcf.gz", "${outfile}_snp.vcf.gz");
+
+    $self->cmd("$$conf{jar} $$conf{filter_indels} -R $$self{fa_ref} --input ${outfile}_snp.vcf.gz -recalFile $vqsr_indel -tranchesFile $tmp_indel.tranches -o $outfile.part.vcf.gz");
+    $self->cmd("tabix -p vcf -f $outfile.part.vcf.gz");
+
+    unlink("${outfile}_snp.vcf.gz.tbi");
+    unlink("${outfile}_snp.vcf.gz");
+
+    rename("$outfile.part.vcf.gz.tbi", "$outfile.tbi");
+    rename("$outfile.part.vcf.gz", "$outfile");
 }
 
 sub pad_columns
@@ -1331,7 +1452,7 @@ sub pad_columns
 sub combine_vqsr
 {
 	my ($self,$outfile,$sites,$pop,$chr) = @_;
-    my $file_list = "$$self{outdir}/$pop/concat.list";
+	my $file_list = "$$self{outdir}/$pop/concat_output.list";
 	open(my $sites_fh,"tabix -h $sites $chr |") or $self->throw("tabix -h $sites $chr: $!");
 	open(my $out_fh,"| bgzip -c > $outfile.part") or $self->throw("bgzip -c > $outfile.part: $!");
 	open(my $files_fh,'<',$file_list) or $self->throw("$file_list: $!");
@@ -1442,5 +1563,4 @@ sub apply_filter
     $self->cmd(qq[zcat $vcf | awk '/^#/||\$7=="PASS"' | bgzip -c > $outfile.part]);
     $self->tabix_part($outfile);
 }
-
 
