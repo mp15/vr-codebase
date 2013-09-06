@@ -46,7 +46,7 @@ use VRTrack::File;
 use VRTrack::Core_obj;
 use VRTrack::History;
 
-use constant SCHEMA_VERSION => '24';
+use constant SCHEMA_VERSION => '25';
 
 our $DEFAULT_PORT = 3306;
 
@@ -1586,7 +1586,7 @@ CREATE TABLE `lane` (
   `raw_bases` bigint(20) unsigned DEFAULT NULL,
   `npg_qc_status` enum('pending','pass','fail','-') DEFAULT 'pending',
   `processed` int(10) DEFAULT 0,
-  `auto_qc_status` enum('no_qc','passed','failed') DEFAULT 'no_qc',
+  `auto_qc_status` enum('no_qc','passed','failed','warning') DEFAULT 'no_qc',
   `qc_status` enum('no_qc','pending','passed','failed','gt_pending','investigate') DEFAULT 'no_qc',
   `gt_status` enum('unchecked','confirmed','wrong','unconfirmed','candidate','unknown','swapped') DEFAULT 'unchecked',
   `submission_id` smallint(5) unsigned DEFAULT NULL,
@@ -1616,7 +1616,7 @@ CREATE TABLE `library` (
   `name` varchar(255) NOT NULL DEFAULT '',
   `hierarchy_name` varchar(255) NOT NULL DEFAULT '',
   `prep_status` enum('unknown','pending','started','passed','failed','cancelled','hold') DEFAULT 'unknown',
-  `auto_qc_status` enum('no_qc','passed','failed') DEFAULT 'no_qc',
+  `auto_qc_status` enum('no_qc','passed','failed','warning') DEFAULT 'no_qc',
   `qc_status` enum('no_qc','pending','passed','failed') DEFAULT 'no_qc',
   `fragment_size_from` mediumint(8) unsigned DEFAULT NULL,
   `fragment_size_to` mediumint(8) unsigned DEFAULT NULL,
