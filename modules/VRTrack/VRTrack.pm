@@ -46,7 +46,7 @@ use VRTrack::File;
 use VRTrack::Core_obj;
 use VRTrack::History;
 
-use constant SCHEMA_VERSION => '25';
+use constant SCHEMA_VERSION => '26';
 
 our $DEFAULT_PORT = 3306;
 
@@ -1484,7 +1484,7 @@ CREATE TABLE `schema_version` (
   PRIMARY KEY  (`schema_version`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 
-insert into schema_version(schema_version) values (24);
+insert into schema_version(schema_version) values (26);
 
 --
 -- Table structure for table `assembly`
@@ -1532,8 +1532,8 @@ CREATE TABLE `note` (
 DROP TABLE IF EXISTS `file`;
 CREATE TABLE `file` (
   `row_id` int unsigned NOT NULL auto_increment key,
-  `file_id` mediumint(8) unsigned NOT NULL DEFAULT 0,
-  `lane_id` mediumint(8) unsigned NOT NULL DEFAULT 0,
+  `file_id` int unsigned NOT NULL DEFAULT 0,
+  `lane_id` int unsigned NOT NULL DEFAULT 0,
   `name` varchar(255) NOT NULL DEFAULT '',
   `hierarchy_name` varchar(255) DEFAULT NULL,
   `processed` int(10) DEFAULT 0,
@@ -1574,8 +1574,8 @@ CREATE TABLE `image` (
 DROP TABLE IF EXISTS `lane`;
 CREATE TABLE `lane` (
   `row_id` int unsigned NOT NULL auto_increment key,
-  `lane_id` mediumint(8) unsigned NOT NULL DEFAULT 0,
-  `library_id` smallint(5) unsigned NOT NULL DEFAULT 0,
+  `lane_id` int unsigned NOT NULL DEFAULT 0,
+  `library_id` int unsigned NOT NULL DEFAULT 0,
   `seq_request_id` mediumint(8) unsigned NOT NULL DEFAULT 0,
   `name` varchar(255) NOT NULL DEFAULT '',
   `hierarchy_name` varchar(255) NOT NULL DEFAULT '',
@@ -1609,7 +1609,7 @@ CREATE TABLE `lane` (
 DROP TABLE IF EXISTS `library`;
 CREATE TABLE `library` (
   `row_id` int unsigned NOT NULL auto_increment key,
-  `library_id` smallint(5) unsigned NOT NULL DEFAULT 0,
+  `library_id` int unsigned NOT NULL DEFAULT 0,
   `library_request_id` mediumint(8) unsigned NOT NULL DEFAULT 0,
   `sample_id` smallint(5) unsigned NOT NULL DEFAULT 0,
   `ssid` mediumint(8) unsigned DEFAULT NULL,
@@ -1658,7 +1658,7 @@ DROP TABLE IF EXISTS `library_multiplex_pool`;
 CREATE TABLE `library_multiplex_pool` (
   `library_multiplex_pool_id` mediumint(8) unsigned NOT NULL auto_increment key,
   `multiplex_pool_id` smallint(5) unsigned NOT NULL DEFAULT 0,
-  `library_id` smallint(5) unsigned NOT NULL DEFAULT 0,
+  `library_id` int unsigned NOT NULL DEFAULT 0,
   KEY `library_multiplex_pool_id` (`library_multiplex_pool_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 
@@ -1688,7 +1688,7 @@ DROP TABLE IF EXISTS `seq_request`;
 CREATE TABLE `seq_request` (
   `row_id` int unsigned NOT NULL auto_increment key,
   `seq_request_id` mediumint(8) unsigned NOT NULL DEFAULT 0,
-  `library_id` smallint(5) unsigned,
+  `library_id` int unsigned,
   `multiplex_pool_id` smallint(5) unsigned,
   `ssid` mediumint(8) unsigned DEFAULT NULL,
   `seq_type` enum('HiSeq Paired end sequencing','Illumina-A HiSeq Paired end sequencing','Illumina-A Paired end sequencing','Illumina-A Pulldown ISC','Illumina-A Pulldown SC','Illumina-A Pulldown WGS','Illumina-A Single ended hi seq sequencing','Illumina-A Single ended sequencing','Illumina-B HiSeq Paired end sequencing','Illumina-B Paired end sequencing','Illumina-B Single ended hi seq sequencing','Illumina-B Single ended sequencing','Illumina-C HiSeq Paired end sequencing','Illumina-C MiSeq sequencing','Illumina-C Paired end sequencing','Illumina-C Single ended hi seq sequencing','Illumina-C Single ended sequencing','MiSeq sequencing','Paired end sequencing','Single ended hi seq sequencing','Single Ended Hi Seq Sequencing Control','Single ended sequencing') DEFAULT 'Single ended sequencing',
@@ -1732,8 +1732,8 @@ CREATE TABLE `mapper` (
 DROP TABLE IF EXISTS `mapstats`;
 CREATE TABLE `mapstats` (
   `row_id` int(10) unsigned NOT NULL AUTO_INCREMENT,
-  `mapstats_id` mediumint(8) unsigned NOT NULL DEFAULT 0,
-  `lane_id` mediumint(8) unsigned NOT NULL DEFAULT 0,
+  `mapstats_id` int unsigned NOT NULL DEFAULT 0,
+  `lane_id` int unsigned NOT NULL DEFAULT 0,
   `mapper_id` smallint(5) unsigned DEFAULT NULL,
   `assembly_id` smallint(5) unsigned DEFAULT NULL,
   `raw_reads` bigint(20) unsigned DEFAULT NULL,
@@ -1833,7 +1833,7 @@ CREATE TABLE `individual` (
 DROP TABLE IF EXISTS `project`;
 CREATE TABLE `project` (
   `row_id` int unsigned NOT NULL auto_increment key,
-  `project_id` smallint(5) unsigned NOT NULL DEFAULT 0,
+  `project_id` int unsigned NOT NULL DEFAULT 0,
   `ssid` mediumint(8) unsigned DEFAULT NULL,
   `name` varchar(255) NOT NULL DEFAULT '',
   `hierarchy_name` varchar(255) NOT NULL DEFAULT '',
@@ -1855,7 +1855,7 @@ CREATE TABLE `project` (
 
 DROP TABLE IF EXISTS `study`;
 CREATE TABLE `study` (
-`study_id` smallint(5) unsigned NOT NULL auto_increment,
+`study_id` int unsigned NOT NULL auto_increment,
 `name` varchar(255) NOT NULL DEFAULT '',
 `acc` varchar(40) DEFAULT NULL,
 `ssid` mediumint(8) unsigned DEFAULT NULL,
@@ -1869,7 +1869,7 @@ PRIMARY KEY  (`study_id`)
 
 DROP TABLE IF EXISTS `allocation`;
 CREATE TABLE `allocation` (
-`study_id` smallint(5) unsigned DEFAULT NULL,
+`study_id` int unsigned DEFAULT NULL,
 `individual_id` smallint(5) unsigned DEFAULT NULL,
 `seq_centre_id` smallint(5) unsigned DEFAULT NULL,
 PRIMARY KEY  (`study_id`,`individual_id`,`seq_centre_id`)
@@ -1883,8 +1883,8 @@ PRIMARY KEY  (`study_id`,`individual_id`,`seq_centre_id`)
 DROP TABLE IF EXISTS `sample`;
 CREATE TABLE `sample` (
   `row_id` int unsigned NOT NULL auto_increment key,
-  `sample_id` smallint(5) unsigned NOT NULL DEFAULT 0,
-  `project_id` smallint(5) unsigned NOT NULL DEFAULT 0,
+  `sample_id` int unsigned NOT NULL DEFAULT 0,
+  `project_id` int unsigned NOT NULL DEFAULT 0,
   `ssid` mediumint(8) unsigned DEFAULT NULL,
   `name` varchar(255) NOT NULL DEFAULT '',
   `hierarchy_name` varchar(40) NOT NULL DEFAULT '',
@@ -1944,7 +1944,7 @@ DROP TABLE IF EXISTS `autoqc`;
 CREATE TABLE `autoqc`
 (
   `autoqc_id` mediumint(8) unsigned NOT NULL auto_increment,
-   mapstats_id mediumint(8) unsigned NOT NULL DEFAULT 0,
+   mapstats_id int unsigned NOT NULL DEFAULT 0,
    test varchar(50) NOT NULL default '',
    result tinyint(1) DEFAULT 0,
    reason varchar(200) NOT NULL default '',
