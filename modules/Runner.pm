@@ -452,7 +452,7 @@ sub _is_marked_as_finished
         else { $is_dirty = 1; }
     }
 
-    if ( exists($$self{_jobs_db}{$done_file}) && $$self{_jobs_db}{$done_file}{finished} ) { return 1; }
+    if ( exists($$self{_jobs_db}{$done_file}) && $$self{_jobs_db}{$done_file}{finished} ) { return 2; }
 
     my $is_done = 0;
 
@@ -528,6 +528,8 @@ sub _get_unfinished_jobs
 
     # Determine the base directory (common prefix) which holds the list of completed jobs
     my %wfiles = ();
+    my $nprn_done = 0;
+    my $nprn_pend = 0;
     for my $call (keys %calls)
     {
         my @list = @{$calls{$call}};
@@ -551,8 +553,11 @@ sub _get_unfinished_jobs
             my $job = $calls{$call}[$i];
             $$job{wait_file} = "$dir/$call.w";
             $$job{run_file}  = $self->_get_temp_prefix($$job{done_file}) . '.r';
-            if ( $self->_is_marked_as_finished($job) )
+            my $ret;
+            if ( ($ret=$self->_is_marked_as_finished($job)) )
             {
+                if ( $nprn_done < 2 ) { $self->debugln("\to  $$job{done_file} .. " . ($ret==2 ? 'cached' : 'done')); $nprn_done++; }
+                elsif ( $nprn_done < 3 ) { $self->debugln("\to  ...etc..."); $nprn_done++; }
                 splice(@{$calls{$call}}, $i, 1);
                 $i--;
             }
@@ -563,6 +568,8 @@ sub _get_unfinished_jobs
                 { 
                     $self->throw("The target file name is not unique: $$job{done_file}\n",Dumper($wfiles{$$job{wait_file}}{$id}{args},$$job{args})); 
                 }
+                if ( $nprn_pend < 2 ) { $self->debugln("\tx  $$job{done_file} .. unfinished"); $nprn_pend++; }
+                elsif ( $nprn_pend < 3 ) { $self->debugln("\tx  ...etc..."); $nprn_pend++; }
                 $wfiles{$$job{wait_file}}{$id} = $job;
             }
         }
@@ -658,7 +665,12 @@ sub wait
             my $stat = $$status[$i]{status};
             my $done_file = $$jobs{$wfile}{$ids[$i]}{done_file};
 
-if ( !defined $stat ) { $self->throw("No status for $i-th job: $done_file; $ids[$i],$wfile??"); }
+            if ( !defined $stat )
+            {
+                # This should be fixed now in RunnerLSF. However, add a check to make this robust for other platforms
+                $self->warn("\nCould not determine status of $i-th job, going to assume that the job is still running: [$done_file] [$wfile] $ids[$i]\n");
+                $stat = $Running;
+            }
 
             # If the job is already running, skip. There can be error from previous run.
             if ( $stat & $Running ) 
@@ -855,7 +867,7 @@ sub _revive_array
     if ( $@ ) { $self->throw("retrieve() threw an error: $freeze_file\n$@\n"); }
     if ( $$self{clean} ) { unlink($freeze_file); }
 
-    while (my ($key,$value) = each %$back) { $$self{$key} = $value; }
+    $self = $back;
 
     if ( !exists($$self{_store}{$job_id}) ) { $self->throw("No such job $job_id in $freeze_file\n"); }
     my $job = $$self{_store}{$job_id};
@@ -878,7 +890,7 @@ sub _revive
     if ( $@ ) { $self->throw("retrieve() threw an error: $freeze_file\n$@\n"); }
     if ( $$self{clean} ) { unlink($freeze_file); }
 
-    while (my ($key,$value) = each %$back) { $$self{$key} = $value; }
+    $self = $back;
 
 	if ( defined $config_file )
 	{
@@ -928,6 +940,50 @@ sub _mkdir
     return $fname;
 }
 
+
+=head2 cmd
+
+    About : Executes a command via bash in the -o pipefail mode. 
+    Args  : <string>
+                The command to be executed
+            <hash>
+                Optional arguments: 
+                - verbose           .. print command to STDERR before executing [0]
+                - require_status    .. throw if exit status is different [0]
+
+=cut
+
+sub cmd
+{
+    my ($self,$cmd,%args) = @_;
+
+    if ( $$self{verbose} ) { print STDERR $cmd,"\n"; }
+
+    # Why not to use backticks? Perl calls /bin/sh, which is often bash. To get the correct
+    #   status of failing pipes, it must be called with the pipefail option.
+
+    my $kid_io;
+    my $pid = open($kid_io, "-|");
+    if ( !defined $pid ) { $self->throw("Cannot fork: $!"); }
+
+    my @out;
+    if ($pid) 
+    {
+        # parent
+        @out = <$kid_io>;
+        close($kid_io);
+    } 
+    else 
+    {      
+        # child
+        exec('/bin/bash', '-o','pipefail','-c', $cmd) or $self->throw("Failed to run the command [/bin/sh -o pipefail -c $cmd]: $!");
+    }
+
+    my $exit_status = $? >> 8;
+    my $status = exists($args{require_status}) ? $args{require_status} : 0;
+    if ( $status ne $exit_status ) { $self->throw("The command exited with $exit_status (expected $status):\n\t$cmd\n\n"); }
+    return @out;
+}
 
 =head2 throw
 
