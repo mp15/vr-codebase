@@ -10,6 +10,7 @@ FILE=""
 DB=""
 TAX=""
 GSF=""
+SPE=""
 while [ "$1" != "" ]; do
     case $1 in
         -d | --db )             shift
@@ -17,6 +18,9 @@ while [ "$1" != "" ]; do
                                 ;;
         -t | --tax )            shift
         						TAX="-tax $1"
+                                ;;
+        -n | --species )        shift
+                                                        SPE="-spe $1"
                                 ;;
         -f | --file )           shift
         						FILE="-f $1"
@@ -44,9 +48,8 @@ if [ $DBEXISTS -eq 1 ];then
     exit
 fi
 
-ARG_UP="-u -v"
+ARG_UP="-u -md5 -wdr -v"
 
-CONF="/nfs/vertres01/conf"
 BIN_EXT="/software/vertres/update_pipeline_hipsci"
 DUMPS="/warehouse/g1k-04/sql_dumps/$DB.sql"
 
@@ -55,4 +58,4 @@ export ORACLE_HOME=/software/oracle_client-10.2.0
 
 mysqldump -u $VRTRACK_RW_USER -p$VRTRACK_PASSWORD -P$VRTRACK_PORT -h$VRTRACK_HOST $DB > $DUMPS
 
-$BIN_EXT/update_pipeline.pl -s $CONF/$DB"_studies" -d $DB $TAX $FILE $GSF
+$BIN_EXT/update_pipeline.pl -s $CONF/$DB"_studies" -d $DB $TAX $SPE $FILE $GSF $ARG_UP

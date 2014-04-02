@@ -38,7 +38,7 @@ Runner.pm   - A simple module for quick development of scripts and pipelines whi
     sub main
     {
         my ($self) = @_;
-        for my $file qw(1 2 3)
+        for my $file (qw(1 2 3))
         {
             # When run in parallel mode (default), the jobs will be submitted
             #   to farm by the spawn call. The arguments are: 
@@ -100,6 +100,7 @@ sub new
     $$self{_farm_options} = { runtime=>600, memory=>1_000 };
     $$self{_running_jobs} = {};
     $$self{_nretries} = 1;
+    $$self{_verbose} = 1;
     $$self{usage} = 
         "Runner.pm arguments:\n" .
         "   +help                   Summary of commands\n" .
@@ -109,12 +110,12 @@ sub new
         "   +loop <int>             Run in daemon mode with <int> sleep intervals\n" .
         "   +mail <address>         Email when the runner finishes\n" .
         "   +maxjobs <int>          Maximum number of simultaneously running jobs\n" .
-        "   +nocache                When checking for finished files, do not rely on cached data and check again\n" .
+        "   +nocache                When checking for finished files, do not rely on cached database and check again\n" .
         "   +retries <int>          Maximum number of retries. When negative, the runner eventually skips the task rather than exiting completely. [$$self{_nretries}]\n" .
         "   +run <file> <id>        Run the freezed object created by spawn\n" .
         "   +sampleconf             Print a working configuration example\n" .
         "   +show <file>            Print the content of the freezed object created by spawn\n" .
-        "   +verbose                Print debugging messages\n" .
+        "   +silent                 Decrease verbosity of the Runner module\n" .
         "\n";
     return $self;
 }
@@ -146,9 +147,9 @@ sub new
                 +sampleconf
                     Print a working config file example
                 +show <file>
-                     Print the content of the freezed object created by spawn
-                +verbose   
-                    Print debugging messages
+                    Print the content of the freezed object created by spawn
+                +silent
+                    Decrease verbosity of the Runner module
                 
 =cut
 
@@ -173,6 +174,7 @@ sub run
         if ( $arg eq '+nocache' ) { $$self{_nocache}=1; next; }
         if ( $arg eq '+retries' ) { $$self{_nretries}=shift(@ARGV); next; }
         if ( $arg eq '+verbose' ) { $$self{_verbose}=1; next; }
+        if ( $arg eq '+silent' ) { $$self{_verbose}=0; next; }
         if ( $arg eq '+local' ) { $$self{_run_locally}=1; next; }
         if ( $arg eq '+show' ) 
         { 
@@ -381,8 +383,9 @@ sub freeze
                 negative value of +retries, a skip file '.s' is created and the job is reported as finished.
                 The skip files are cleaned automatically when +retries is set to a positive value. A non cleanable 
                 variant is force skip '.fs' file which is never cleaned by the pipeline and is created/removed 
-                manually by the user. Note that 'spawn' only schedules the tasks and the jobs are submitted to
-                the farm by the 'wait' call.
+                manually by the user. When 'fs' is cleaned by the user, the pipeline must be run with +nocache
+                in order to notice the change. 
+                Note that 'spawn' only schedules the tasks and the jobs are submitted to the farm by the 'wait' call.
     Usage : $self->spawn("method",$done_file,@params);
     Args  : <func_name>
                 The method to be run
@@ -420,13 +423,11 @@ sub _is_marked_as_finished
 
     my $call      = $$job{call};
     my $done_file = $$job{done_file};
-    my $basename  = $self->_get_temp_prefix($done_file);
     my $wfile     = $$job{wait_file};
-    my $sfile     = "$basename.s";
-    my $fsfile    = "$basename.fs";
     my $is_dirty  = 0;
+    my $is_done   = 0;
 
-    # Read the plain text "database" of finished files
+    # First time here, read the plain text "database" of finished files
     if ( !exists($$self{_jobs_db}{$done_file}) && !$$self{_nocache} )
     {
         if ( -e $wfile )
@@ -435,7 +436,7 @@ sub _is_marked_as_finished
             while (my $line=<$fh>)
             {
                 chomp($line);
-                if ( !($line=~/^([01])\t(\d+)\t/) ) { $self->throw("Could not parse $wfile: $line\n"); }
+                if ( !($line=~/^([01sf])\t(\d+)\t/) ) { $self->throw("Could not parse $wfile: $line\n"); }
                 my $done = $1;
                 my $id   = $2;  
                 my $file = $';
@@ -452,9 +453,30 @@ sub _is_marked_as_finished
         else { $is_dirty = 1; }
     }
 
-    if ( exists($$self{_jobs_db}{$done_file}) && $$self{_jobs_db}{$done_file}{finished} ) { return 2; }
+    # No cache exists, init the job, set its ID and control file locations
+    if ( !exists($$self{_jobs_db}{$done_file}) )
+    {
+        if ( !exists($$self{_jobs_db}{$done_file}{id}) ) { $$self{_jobs_db}{$done_file}{id} = ++$$self{_max_ids}{$call}; }
+        $$self{_jobs_db}{$done_file}{call}  = $call;
+        $$self{_jobs_db}{$done_file}{wfile} = $wfile;
+        $$self{_jobs_db}{$done_file}{dfile} = $done_file;
+        $$self{_jobs_db}{$done_file}{finished} = 0;
+    }
+    my $sfile  = "$wfile.$$self{_jobs_db}{$done_file}{id}.s";
+    my $fsfile = "$wfile.$$self{_jobs_db}{$done_file}{id}.fs";
 
-    my $is_done = 0;
+    # If skip file exists and +retries >0, the skip file will be deleted
+    if ( $$self{_nretries}>0 && $$self{_jobs_db}{$done_file}{finished} eq 's' ) 
+    { 
+        $$self{_jobs_db}{$done_file}{finished} = 0; 
+        $is_dirty = 1;
+    }
+    if ( $$self{_jobs_db}{$done_file}{finished} ) 
+    { 
+        if ( $$self{_jobs_db}{$done_file}{finished} eq 'f' ) { $self->debugln("Skipping the job upon request, a force skip file exists: $fsfile"); }
+        if ( $$self{_jobs_db}{$done_file}{finished} eq 's' ) { $self->debugln("Skipping the job, a skip file exists: $sfile"); }
+        return 2;
+    }
 
     # Stat on non-existing files is cheap
     if ( $self->is_finished($done_file) ) 
@@ -466,14 +488,18 @@ sub _is_marked_as_finished
     elsif ( -e $fsfile )
     {
         # The only way to clean a force skip file is to remove it manually
-        $self->debugln("Skipping the job upon request, a force skip file exists: $basename.fs");
-        $is_done  = 1;
+        $self->debugln("Skipping the job upon request, a force skip file exists: $fsfile");
+        $is_done  = 'f';
         $is_dirty = 1;
     }
     elsif ( -e $sfile )
     {
         # This is currently the only way to clean the skip files: run with +retries set to positive value
-        if ( $$self{_nretries}<0 ) { $is_done = 1; }
+        if ( $$self{_nretries}<0 ) 
+        { 
+            $self->debugln("Skipping the job, a skip file exists: $sfile");
+            $is_done = 's'; 
+        }
         else
         {
             $self->debugln("Cleaning skip file: $sfile");
@@ -482,11 +508,7 @@ sub _is_marked_as_finished
         $is_dirty = 1;
     }
 
-    if ( !exists($$self{_jobs_db}{$done_file}{id}) ) { $$self{_jobs_db}{$done_file}{id} = ++$$self{_max_ids}{$call}; }
-    $$self{_jobs_db}{$done_file}{call}  = $call;
-    $$self{_jobs_db}{$done_file}{wfile} = $wfile;
-    $$self{_jobs_db}{$done_file}{dfile} = $done_file;
-    $$self{_jobs_db}{$done_file}{finished} = $is_done ? 1 : 0;
+    $$self{_jobs_db}{$done_file}{finished} = $is_done;
     $$self{_jobs_db_dirty} += $is_dirty;
     return $$self{_jobs_db}{$done_file}{finished};
 }
@@ -552,11 +574,10 @@ sub _get_unfinished_jobs
         {
             my $job = $calls{$call}[$i];
             $$job{wait_file} = "$dir/$call.w";
-            $$job{run_file}  = $self->_get_temp_prefix($$job{done_file}) . '.r';
             my $ret;
             if ( ($ret=$self->_is_marked_as_finished($job)) )
             {
-                if ( $nprn_done < 2 ) { $self->debugln("\to  $$job{done_file} .. " . ($ret==2 ? 'cached' : 'done')); $nprn_done++; }
+                if ( $nprn_done < 2 ) { $self->debugln("\to  $$job{done_file} .. " . ($ret ne '1' ? 'cached' : 'done')); $nprn_done++; }
                 elsif ( $nprn_done < 3 ) { $self->debugln("\to  ...etc..."); $nprn_done++; }
                 splice(@{$calls{$call}}, $i, 1);
                 $i--;
@@ -630,6 +651,7 @@ sub wait
             my $rfile = $self->freeze($wfile);
             for my $id (sort {$a<=>$b} keys %{$$jobs{$wfile}})
             {
+                $self->_mkdir($$jobs{$wfile}{$id}{done_file});
                 my $cmd = qq[$0 +run $rfile $id];
                 $self->debugln("$$jobs{$wfile}{$id}{call}:\t$cmd");
                 system($cmd);
@@ -694,17 +716,28 @@ sub wait
             { 
                 my $nfailures = $$status[$i]{nfailures};
                 if ( $nfailures > abs($$self{_nretries}) )
-                {   
-                    my $msg = 
-                        "The job failed repeatedly, ${nfailures}x: $wfile.$ids[$i].[eo]\n" .
-                        "(Remove $jobs_id_file to clean the status, increase +retries or run with negative value of +retries to skip this task.)\n";
+                {
+                    if ( $$self{_nretries} < 0 )
+                    {
+                        my $sfile = "$wfile.$ids[$i].s";
+                        $self->warn("\nThe job failed repeatedly (${nfailures}x) and +retries is negative, skipping: $wfile.$ids[$i].[eos]\n\n");
+                        system("touch $sfile");
+                        if ( $? ) { $self->throw("The command exited with a non-zero status $?: touch $sfile\n"); }
+                        $must_run = 0;
+                    }
+                    else
+                    {
+                        my $msg = 
+                            "The job failed repeatedly, ${nfailures}x: $wfile.$ids[$i].[eo]\n" .
+                            "(Remove $jobs_id_file to clean the status, increase +retries or run with negative value of +retries to skip this task.)\n";
 
-                    $self->_send_email('failed', "The runner failed repeatedly\n", $$self{_about}, "\n", $msg);
-                    $self->throw($msg);
+                        $self->_send_email('failed', "The runner failed repeatedly\n", $$self{_about}, "\n", $msg);
+                        $self->throw($msg);
+                    }
                 }
                 elsif ( !$warned )
                 {
-                    $self->warn("\nRunning again, the previous attempt failed: $wfile.*\n\n");
+                    $self->warn("\nRunning again, the previous attempt failed: $wfile.$ids[$i].[eo]\n\n");
                     $warned = 1;
                 }
 
@@ -744,6 +777,11 @@ sub wait
         my $rfile = $self->freeze($wfile);
         my $cmd = qq[$0 +run $rfile {JOB_INDEX}];
         $self->debugln("$wfile:\t$cmd");
+
+        for my $id (@ids)
+        {
+            $self->_mkdir($$jobs{$wfile}{$id}{done_file});
+        }
 
         my $ok;
         eval 
@@ -936,7 +974,7 @@ sub _mkdir
 {
     my ($self,$fname) = @_;
     $fname =~ s{[^/]+$}{};
-    `mkdir -p $fname`;
+    if ( !-e $fname ) { `mkdir -p $fname`; }
     return $fname;
 }
 

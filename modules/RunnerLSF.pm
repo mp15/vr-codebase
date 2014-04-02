@@ -119,7 +119,8 @@ sub parse_bjobs_l
             $$job{queue} = $1;
         }
         # Tue Mar 19 13:00:35: [685] started on <uk10k-4-1-07>...
-        if ( $lines[$i]=~/^\w+\s+(\w+)\s+(\d+) (\d+):(\d+):(\d+):.+ started on </ ) 
+        # Tue Dec 24 13:12:00: [1] started on 8 Hosts/Processors <8*vr-1-1-05>...
+        if ( $lines[$i]=~/^\w+\s+(\w+)\s+(\d+) (\d+):(\d+):(\d+):.+ started on/ ) 
         {
             $$job{started} = DateTime->new(month=>$months{$1}, day=>$2, hour=>$3, minute=>$4, year=>$year)->epoch;
         }
@@ -288,16 +289,33 @@ sub run_array
 
   
     $cmd =~ s/{JOB_INDEX}/\$LSB_JOBINDEX/g;
+
+    # Set bsub options. By default request 1GB of memory, the queues require mem to be set explicitly
     my $bsub_opts = '';
-    if ( exists($$opts{memory}) && $$opts{memory} ) 
-    { 
-        my $mem = int($$opts{memory});
-        if ( $mem )
-        {
-            my $units = get_lsf_limits_unit();
-            my $lmem  = $units eq 'kB' ? $mem*1000 : $mem;
-            $bsub_opts = sprintf " -M%d -R 'select[type==X86_64 && mem>%d] rusage[mem=%d]'", $lmem,$mem,$mem; 
+    my $units  = get_lsf_limits_unit();
+    my $mem    = exists($$opts{memory}) && $$opts{memory} ? int($$opts{memory}) : 1000;
+    my $lmem   = $units eq 'kB' ? $mem*1000 : $mem;
+    $bsub_opts = sprintf " -M%d -R 'select[type==X86_64 && mem>%d] rusage[mem=%d]'", $lmem,$mem,$mem; 
+    if ( !defined($$opts{queue}) ) 
+    {            
+        if ( defined($$opts{runtime}) ) 
+        { 
+            if ( $$opts{runtime} <= 720.0 ) { $$opts{queue} = 'normal'; }
+            elsif ( $$opts{runtime} <= 60*24*2 ) { $$opts{queue} = 'long'; }
+            else { $$opts{queue} = 'basement'; }
         }
+        else 
+        { 
+            $$opts{queue} = 'normal';
+        }
+    }
+    if ( defined($$opts{queue}) ) 
+    {
+        $bsub_opts .= " -q $$opts{queue}";
+    }
+    if ( defined($$opts{cpus}) ) 
+    {
+        $bsub_opts .= " -n $$opts{cpus} -R 'span[hosts=1]'";
     }
     my $bsub_cmd  = qq[bsub -J '${job_name}[$bsub_ids]' -e $job_name.\%I.e -o $job_name.\%I.o $bsub_opts '$cmd'];
 
@@ -307,7 +325,7 @@ sub run_array
     if ( scalar @out!=1 || !($out[0]=~/^Job <(\d+)> is submitted/) )
     {
         my $cwd = `pwd`;
-        confess("Expected different output from bsub. The command was:\n\t$cmd\nThe working directory was:\n\t$cwd\nThe output was:\n", @out);
+        confess("Expected different output from bsub. The command was:\n\t$cmd\nThe bsub_command was:\n\t$bsub_cmd\nThe working directory was:\n\t$cwd\nThe output was:\n", @out);
     }
 
     # Write down info about the submitted command

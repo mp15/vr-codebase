@@ -36,8 +36,8 @@ sub new
     my ($class,@args) = @_;
     my $self = $class->SUPER::new(@args);
 
-    $$self{config_version} = '1382541677';
-    $$self{merge_files}  = 0;
+    $$self{config_version} = '1384418534';
+    $$self{merge_files}  = 1;
     $$self{do_clean}     = 1;
     $$self{ngood_max}    = 1_000;
     $$self{nbad_max}     = 1_000;
@@ -50,7 +50,7 @@ sub new
     $$self{nfold}        = '';
     $$self{snps}  = 
     {
-        fixed_filter => q[-m+ -e'%QUAL<10 && RPB<0.1'],
+        bad_sites    => q[-m+ -e'%QUAL<10 && RPB<0.1'],
         annots       => 'RPB,SGB,VDB,QUAL,MQSB,ICB',
         good_vcf     => '/lustre/scratch105/projects/g1k/ref/broad_resources_b37/hapmap_3.3.b37.sites.vcf.gz',
         override_bad => 1,
@@ -76,15 +76,38 @@ sub new
 
             # Single VCF or a file with list of file names. Can be overriden by the -i command line argument.
             in_vcf       => undef,
-            merge_files  => ] .$$self{merge_files}. q[,     # Filter each file separately?
+            merge_files  => ] .$$self{merge_files}. q[,     # Set to 0 if files should be filtered separately
 
             snps => 
             {
-                fixed_filter => q\[] .$$self{snps}{fixed_filter}. q[\],     # IMPORTANT: this defines bad sites! Only sites with FILTER="PASS" or "." will be classified
+                # The "bad_sites" filter is used to pre-filter the "in_vcf" file. IMPORTANT: this step
+                #   defines bad sites in training. The sites failing this filter will be marked as bad,
+                #   only sites with FILTER="PASS" or "." will be classified.
+                bad_sites    => q\[] .$$self{snps}{bad_sites}. q[\],
+
+                # The optional "good_sites" filter enables to further restrict "good_vcf" sites. When
+                #   set, only sites present in "good_vcf" and passing the "good_sites" filter are used
+                #   to define good sites in training.
+                good_sites   => undef,
+
+                # Annotations to select from. The pipeline will systematically try all combinations
+                #   (up to the nshuffle_max limit) and select annotations which prove to be most
+                #   successfull in distinguishing the good and bad training sites.
                 annots       => '] .$$self{snps}{annots}. q[',
+
+                # Defines good sites used in training.
                 good_vcf     => '] .$$self{snps}{good_vcf}. q[',
-                override_bad => '] .$$self{snps}{override_bad}. q[',        # Treat good sites failing fixed filters as: bad (0), good (1), unclassified (2)
+
+                # How to resolve conflicting results when a good site (i.e. present in "good_vcf") is also
+                #   marked as bad (i.e. failing the "bad_sites" filter): Mark these sites as bad (0), good (1),
+                #   leave unclassified and let the classifier decide (2).
+                override_bad => '] .$$self{snps}{override_bad}. q[',
+
+                # Maximum number of annotation combinations to try
                 nshuffle_max => '] .$$self{snps}{nshuffle_max} . q[',
+
+                # Every single run is relatively fast, but there can be many combinations to test.
+                #   Chunk multiple runs into one to prevent submission of too many short-running jobs.
                 chunk_by     => '] .$$self{snps}{chunk_by} . q[',
                 
                 # Default parameters. SVM's -c and -g will be expanded to 2**c,2**g
@@ -94,6 +117,9 @@ sub new
             # Maximum number of good and bad sites to train on (SVM can be slow)
             ngood_max   => ] .$$self{ngood_max}. q[,
             nbad_max    => ] .$$self{nbad_max}. q[,
+
+            # If specified, populate each allele-frequency bin with the same number of training sites
+            # af_bins     => [ 0.1, 1, 5 ],
             nfold       => '] .$$self{nfold} . q[',      # n-fold cross-validation
             random_seed => undef,      # random seed for selection training sites
 
@@ -113,6 +139,7 @@ sub new
         "Usage: run-filter [som|svm] [OPTIONS]\n" .
         "Options:\n" .
         "   -a, --annots <type:list>            Subset of annotations to use, e.g. snps:QUAL,RPB\n" .
+        "   -A, --apply <expr>                  Apply filter to produce final VCF(s). If \"-\" is given, only MLQ annotation is added\n" .
         "   -C, --clean                         Clean all temporary files\n" .
         "   -c, --classify                      Classify\n" .
         "   -i, --input <vcf>                   Input VCF\n" .
@@ -121,15 +148,21 @@ sub new
         "   -p, --parameters <type:string>      Parameters to use, e.g. 'snps:-c 15 -g -3' (overrides train_args config key)\n" .
         "   -r, --randomize                     Randomly shuffle annotations to find the best combination\n" .
         "   -s, --scan                          Scan the parameter space to find the best values\n" .
+        "   -t, --threshold <type:value>        Test the effects of MLQ threshold, e.g. 'snps:0.0568229'\n" .
         "The pipeline is usually run as:\n" .
         "   run-filter [som|svm] +config <file> -o <outdir>\n" .
-        "Which is equivalent to the following steps:\n" .
+        "Which automatically runs the following three steps:\n" .
         "   1) Search for best annotations\n" .
         "       run-filter som +config <file> -o <outdir> --randomize\n" .
         "   2) Search for best parameters\n" .
         "       run-filter som +config <file> -o <outdir> -a <annots> --scan\n" .
         "   3) Classify\n" .
         "       run-filter som +config <file> -o <outdir> -a <annots> -p <params> --classify\n" .
+        "After this is done, proceed to select filtering threshold based on <outdir>/snps/result.tab*:\n" .
+        "   4) Test the effect of the threshold\n" .
+        "       run-filter som +config <file> -o <outdir> -t <type>:<value>\n" .
+        "   5) Create final VCF with genotypes. The --apply expression is directly passed to `bcftools filter`, e.g.\n" .
+        "       run-filter som +config <file> -o <outdir> --apply '-e \"%QUAL<10 || (MLQ<0.0568229 & %TYPE=\\\"snp\\\")\"'\n" .
         "\n";
 
     return $self;
@@ -143,6 +176,8 @@ sub parse_args
     {
         if ( $arg eq 'som' ) { next; }
         if ( $arg eq 'svm' ) { next; }
+        if ( $arg eq '-t' or $arg eq '--threshold' ) { my ($type,$value)=split(/:/,shift(@ARGV)); $$self{threshold}{$type} = $value; $$self{test_threshold} = 1; next; }
+        if ( $arg eq '-A' or $arg eq '--apply' ) { $$self{apply_threshold} = shift(@ARGV); next; }
         if ( $arg eq '-r' or $arg eq '--randomize' ) { $$self{randomize} = 1; $action{randomize} = 1; next; }
         if ( $arg eq '-s' or $arg eq '--scan' ) { $$self{scan} = 1; $action{scan} = 1; next; }
         if ( $arg eq '-c' or $arg eq '--classify' ) { $$self{classify} = 1; $action{classify} = 1; next; }
@@ -172,7 +207,7 @@ sub parse_args
     if ( scalar keys %action != 1 ) { $$self{auto} = 1; }
     $$self{types} = [];
     if ( $$self{do_snps} ) { push @{$$self{types}}, 'snps'; }
-    if ( $$self{do_indels_} ) { push @{$$self{types}}, 'indels'; }
+    if ( $$self{do_indels} ) { push @{$$self{types}}, 'indels'; }
     if ( !@{$$self{types}} ) { $self->throw("Neither do_snps nor do_indels key is set!\n"); }
     if ( exists($$self{version}) && $$self{version} ne $$self{config_version} )
     {
@@ -190,6 +225,7 @@ sub parse_args
             $anns{$ann} = 1;
         }
     }
+    if ( exists($$self{apply_threshold}) ) { $$self{test_threshold} = 0; }
     if ( !defined($$self{in_vcf}) ) { $self->throw("Expected -i option."); }
     if ( $$self{clean} ) 
     { 
@@ -275,6 +311,20 @@ sub main
     {
         $self->main_classify(@jobs);
     }
+    if ( $$self{test_threshold} )
+    {
+        $self->main_test_threshold();
+    }
+    if ( exists($$self{apply_threshold}) )
+    {
+        $self->main_apply_threshold();
+    }
+
+    # Run performance stats and clean
+    $self->spawn('runtime_stats',"$outdir/runtime");
+    $self->wait;
+    $self->clean($outdir) unless !$$self{do_clean};
+
     $self->all_done;
 }
 sub main_randomize
@@ -454,6 +504,98 @@ sub main_classify
     }
     $self->wait;
 }
+sub main_test_threshold
+{
+    my ($self) = @_;
+    for my $type (@{$$self{types}})
+    {
+        my @files;
+        opendir(my $dh,"$$self{outdir}/$type/scored") or $self->throw("$$self{outdir}/$type/scored: $!");
+        while (my $file = readdir $dh) 
+        {
+            if ( $file=~/\.vcf\.gz$/ or $file=~/\.bcf$/ ) { push @files, $file; }
+        }
+        closedir $dh;
+
+        my $th = $$self{threshold}{$type};
+        for my $file (@files)
+        {
+            my $out = $file;
+            $out =~ s/\.vcf.gz$/.bcf/;
+            $self->spawn('apply_threshold',"$$self{outdir}/$type/test-$type-$th/$out","$$self{outdir}/$type/scored/$file",qq[-Ob -i'MLQ>=$th']);
+        }
+        $self->wait;
+
+        if ( !$self->is_finished("$$self{outdir}/$type/test-$type-$th.stats") )
+        {
+            $self->merge_stats("$$self{outdir}/$type/test-$type-$th.stats","$$self{outdir}/$type/test-$type-$th/*.stats");
+        }
+    }
+}
+sub main_apply_threshold
+{
+    my ($self) = @_;
+    my @files;
+    for my $type (@{$$self{types}})
+    {
+        opendir(my $dh,"$$self{outdir}/$type/scored") or $self->throw("$$self{outdir}/$type/scored: $!");
+        while (my $file = readdir $dh)
+        {
+            if ( $file=~/\.vcf\.gz$/ or $file=~/\.bcf$/ ) { push @files, "$$self{outdir}/$type/scored/$file"; }
+        }
+        closedir $dh;
+    }
+    $self->spawn('create_mlq_tab',"$$self{outdir}/MLQ.tab.gz",@files);
+    $self->wait;
+
+    @files = $self->get_file_list($$self{in_vcf});
+    for my $file (@files)
+    {
+        $self->spawn('apply_mlq_tab',"$$self{outdir}/final-vcfs/$$file{bname}.vcf.gz","$$self{outdir}/MLQ.tab.gz",$$file{file});
+    }
+    $self->wait;
+
+}
+
+sub apply_threshold
+{
+    my ($self,$outfile,$infile,$opts) = @_;
+    $self->cmd("$$self{bcftools} filter $opts $infile > $outfile.part");
+    $self->cmd("$$self{bcftools} stats $outfile.part > $outfile.stats");
+    $self->tabix_part($outfile);
+}
+sub merge_stats
+{
+    my ($self,$outfile,$infiles) = @_;
+    $self->cmd("$$self{plot_stats} -m $infiles > $outfile.part");
+    rename("$outfile.part",$outfile) or $self->throw("rename: $outfile.part $outfile");
+}
+sub create_mlq_tab
+{
+    my ($self,$outfile,@files) = @_;
+    open(my $fh,'>',"$outfile.list") or $self->throw("$outfile.list: $!");
+    for my $file (@files) { print $fh "$file\n"; }
+    close($fh) or $self->throw("close $outfile.list");
+    $self->cmd(qq[$$self{bcftools} query -f'\%CHROM\\t\%POS\\t\%REF\\t\%ALT\\t\%MLQ\\n' -v $outfile.list | sort -k1,1 -k2,2n | bgzip -c > $outfile.part]); 
+    $self->cmd(qq[$$self{bcftools} tabix -s1 -b2 -e2 $outfile.part]);
+    rename("$outfile.part.tbi","$outfile.tbi");
+    rename("$outfile.part",$outfile);
+}
+sub apply_mlq_tab
+{
+    my ($self,$outfile,$mlq,$infile) = @_;
+    my $cmd = 
+        qq[$$self{bcftools} view $infile] .
+        qq[| vcf-annotate -a $mlq -d key=INFO,ID=MLQ,Number=1,Type=Float,Description='Machine Learning Quality Score' -c CHROM,POS,REF,ALT,MLQ];
+
+    if ( $$self{apply_threshold} ne '-' )
+    {
+        $cmd .= qq[ | $$self{bcftools} filter $$self{apply_threshold}];
+    }
+    $self->cmd($cmd . qq[ -Oz > $outfile.part]);
+    $self->cmd(qq[$$self{bcftools} stats $outfile.part > $outfile.stats]);
+    $self->tabix_part($outfile);
+}
 
 sub sanity_check_annots
 {
@@ -502,7 +644,11 @@ sub shuffle
     # variable number of nested loops
     my (@out, @cnt);
     my ($il, $nl);
+
     my $i = 0;
+    for ($il=0; $il<$n; $il++) { $out[$i] |= 1<<$i; }   # add all (11111)
+    $i++;
+
     for ($nl=$n-1; $nl>=1; $nl--)       # the case 0000 not considered, starting from 00001
     {
         for ($il=0; $il<$nl-1; $il++) { $cnt[$il] = 0; }
@@ -527,7 +673,6 @@ sub shuffle
         }
         if ( $i >= $nmax ) { last; }
     }
-    for ($il=0; $il<$n; $il++) { $out[$i] |= 1<<$i; }   # add all (11111)
     return \@out;
 }
 
@@ -599,7 +744,7 @@ sub get_file_list
 sub strip_genotypes
 {
     my ($self,$outfile,$infile,$type) = @_;
-    $self->cmd("$$self{bcftools} subset -G -ou $infile -i '%TYPE=\"$type\"' | $$self{bcftools} filter -s BadSite $$self{$type}{fixed_filter} -ob - > $outfile.part");
+    $self->cmd("$$self{bcftools} view -G -Ou $infile -i '%TYPE=\"$type\"' | $$self{bcftools} filter -s BadSite $$self{$type}{bad_sites} -Ob - > $outfile.part");
     $self->cmd("$$self{bcftools} index $outfile.part");
     rename("$outfile.part.csi","$outfile.csi") or $self->throw("rename: $outfile.part.csi $outfile.csi: $!");
     rename("$outfile.part",$outfile) or $self->throw("rename: $outfile.part $outfile: $!");
@@ -609,17 +754,31 @@ sub extract_annots
 {
     my ($self,$outfile,$infile,$type) = @_;
 
+    my $good_vcf = $$self{$type}{good_vcf};
+    if ( defined $$self{$type}{good_sites} )
+    {
+        my $tmpfile = $infile;
+        $tmpfile  =~ s/\.bcf$//i;
+        $tmpfile .= '.good.bcf';
+        $self->cmd("$$self{bcftools} isec -c both -n=2 -w1 $infile $good_vcf -Ou | $$self{bcftools} filter $$self{$type}{good_sites} -Ob - > $tmpfile");
+        $self->cmd("$$self{bcftools} index $tmpfile");
+        $good_vcf = $tmpfile;
+    }
+
     my @anns = split(/,/,$$self{$type}{annots});
-    my $anns = '%CHROM\t%POS\t%REF\t%ALT\t%FILTER\t%MASK\t%' . join('\t%', @anns) . '\n';
-    my $cmd  = "$$self{bcftools} query -c both -f'$anns' $infile $$self{$type}{good_vcf}";
+    my $anns = '%CHROM\t%POS\t%REF\t%ALT\t%FILTER\t%MASK\t%AC\t%AN\t%' . join('\t%', @anns) . '\n';
+    my $cmd  = "$$self{bcftools} query -c both -f'$anns' $infile $good_vcf";
 
     print STDERR "$cmd\n";
     open(my $in,"$cmd |") or $self->throw("$cmd: $!");
 
     open(my $out,'>',"$outfile.part") or $self->throw("$outfile.part: $!");
+    print $out "# [1]CHROM\t[2]POS\t[3]IS_TS\t[4]CLASS (unclassified:0, good:$$self{good_site}, bad:$$self{bad_site})\t[5]AF";
+    for (my $i=0; $i<@anns; $i++) { printf $out "\t[%d]%s", $i+6,$anns[$i]; } 
+    print $out "\n";
     while (my $line=<$in>)
     {
-        my ($chr,$pos,$ref,$alt,$flt,$mask,@vals) = split(/\t/,$line);
+        my ($chr,$pos,$ref,$alt,$flt,$mask,$ac,$an,@vals) = split(/\t/,$line);
         $ref = lc($ref);
         $alt = lc($alt);
         $alt =~ s/,.*//;
@@ -644,11 +803,23 @@ sub extract_annots
         elsif ( !$$self{$type}{override_bad} ) { $class = $$self{bad_site}; }
         elsif ( $$self{$type}{override_bad}==1 ) { $class = $$self{good_site}; }
 
-        print $out "$chr\t$pos\t$is_ts\t$class\t", join("\t",@vals);
+        my $af = sprintf "%.2f", $ac*100./$an;
+        print $out "$chr\t$pos\t$is_ts\t$class\t$af\t", join("\t",@vals);
     }
     close($in) or $self->throw("close failed: $cmd");
     close($out) or $self->throw("close failed: $outfile.part");
     rename("$outfile.part",$outfile) or $self->throw("rename: $outfile.part $outfile");
+}
+
+sub af_to_bin
+{
+    my ($self,$af) = @_;
+    if ( !exists($$self{af_bins}) ) { return 0; }
+    for (my $i=0; $i<@{$$self{af_bins}}; $i++)
+    {
+        if ( $af<$$self{af_bins}[$i] ) { return $i; }
+    }
+    return scalar @{$$self{af_bins}};
 }
 
 sub scale_annots
@@ -657,12 +828,14 @@ sub scale_annots
 
     if ( defined $$self{random_seed} ) { srand($$self{random_seed}); }
 
-    my $sites_fname = $outfile;
-    my $scale_fname = $outfile;
-    my $train_fname = $outfile;
-    $sites_fname =~ s/.tab$/.sites.gz/;
-    $scale_fname =~ s/.tab$/.scale/;
-    $train_fname =~ s/.tab$/.train/;
+    my $sites_fname  = $outfile;
+    my $scale_fname  = $outfile;
+    my $train_fname  = $outfile;
+    my $af_bin_fname = $outfile;
+    $sites_fname  =~ s/.tab$/.sites.gz/;
+    $scale_fname  =~ s/.tab$/.scale/;
+    $train_fname  =~ s/.tab$/.train/;
+    $af_bin_fname =~ s/.tab$/.af/;
 
     open(my $fh,'>',"$outfile.anns") or $self->throw("$outfile.anns: $!");
     print $fh $$self{$type}{annots},"\n";
@@ -672,9 +845,10 @@ sub scale_annots
     my @quests = ();
     for my $ann (@anns) { push @quests, Quantile->new(); }
     my $RE_FLOAT = qr/\-?\d+\.?\d*(?:[eE][+-]\d+)?/;
-    my $ngood = 0;
-    my $nbad  = 0;
-    my $ntot  = 0;
+    my @ngood = ();
+    my @nbad  = ();
+    my @ntot  = ();
+    my @extremes = ();
 
     # Read all values, extract chr,pos,is_ts,class and write for later evaluation.
     # Estimate quantiles for scaling.
@@ -685,25 +859,45 @@ sub scale_annots
         open(my $in,'<',$file) or $self->throw("$file: $!");
         while (my $line=<$in>)
         {
-            my ($chr,$pos,$is_ts,$class,@vals) = split(/\t/,$line);
+            if ( substr($line,0,1) eq '#' ) { next; }
+            my ($chr,$pos,$is_ts,$class,$af,@vals) = split(/\t/,$line);
             chomp($vals[-1]);
-            if ( $class==$$self{bad_site} ) { $nbad++; }
-            elsif ( $class==$$self{good_site} ) { $ngood++; }
+            my $af_bin = $self->af_to_bin($af);
+
+            if ( $class==$$self{bad_site} ) { $nbad[$af_bin]++; }
+            elsif ( $class==$$self{good_site} ) { $ngood[$af_bin]++; }
             for (my $i=0; $i<@vals; $i++)
             {
                 if ( !($vals[$i]=~$RE_FLOAT) ) { next; }        # missing values do not contribute to scaling as defaults
                 $quests[$i]->add($vals[$i]);
+                if ( !exists($extremes[$i]) or $extremes[$i][0] > $vals[$i] ) { $extremes[$i][0] = $vals[$i]; }
+                if ( !exists($extremes[$i]) or $extremes[$i][1] < $vals[$i] ) { $extremes[$i][1] = $vals[$i]; }
             }
             print $fh_sites "$chr\t$pos\t$class\t$is_ts\n";
-            $ntot++;
+            $ntot[$af_bin]++;
         }
         close($in) or $self->throw("close failed: $file");
     }
     close($fh_sites) or $self->throw("close failed: $sites_fname");
 
-    my $ngood_skip = $ngood > $$self{ngood_max} ? $ngood - $$self{ngood_max} : 0;
-    my $nbad_skip  = $nbad > $$self{nbad_max} ? $nbad - $$self{nbad_max} : 0;
-    my @nout = ();
+    my @ngood_skip = ();
+    my @nbad_skip  = ();
+    my $ngood_max  = int($$self{ngood_max} / @ntot);
+    my $nbad_max   = int($$self{nbad_max} / @ntot);
+    my $ntot = 0;
+    for (my $i=0; $i<@ntot; $i++)
+    {
+        $ngood_skip[$i] = $ngood[$i] && $ngood[$i] > $ngood_max ? $ngood[$i] - $ngood_max : 0;
+        $nbad_skip[$i]  = $nbad[$i] && $nbad[$i] > $nbad_max ? $nbad[$i] - $nbad_max : 0;
+        $ntot += $ntot[$i];
+    }
+
+    # Collect some stats
+    my @bins = exists($$self{af_bins}) ? (@{$$self{af_bins}}) : ('100');
+    my @ntrain_str = ();
+    for (my $i=0; $i<@bins; $i++) { $ntrain_str[$i] = "$i\t$bins[$i]\t$ngood[$i]\t$nbad[$i]"; }
+    my @ngood_train = ();
+    my @nbad_train  = ();
 
     # Collect the quantiles
     my @margins = ();
@@ -717,13 +911,16 @@ sub scale_annots
     # Scale and write the annots file
     open(my $fh_out,'>',"$outfile.part") or $self->throw("$outfile.part: $!");
     open(my $fh_train,'>',$train_fname) or $self->throw("$train_fname: $!");
+    my @nout = ();
     for my $file (@files)
     {
         open(my $in,'<',$file) or $self->throw("$file: $!");
         while (my $line=<$in>)
         {
-            my ($chr,$pos,$is_ts,$class,@vals) = split(/\t/,$line);
+            if ( substr($line,0,1) eq '#' ) { next; }
+            my ($chr,$pos,$is_ts,$class,$af,@vals) = split(/\t/,$line);
             chomp($vals[-1]);
+
             for (my $i=0; $i<@vals; $i++)
             {
                 if ( !($vals[$i]=~$RE_FLOAT) ) { $vals[$i] = undef; next; }
@@ -735,22 +932,28 @@ sub scale_annots
             push @out, $self->format_values(\@anns, @vals);
             print $fh_out join("\t",@out),"\n";
 
+            my $af_bin = $self->af_to_bin($af);
             my $skip = 1;
             if ( $class==$$self{good_site} )
             {
-                if ( !$ngood_skip ) { $skip = 0; } 
-                elsif ( rand(1) > $ngood_skip/$ngood ) { $skip = 0; }
-                else { $ngood_skip--; }
-                $ngood--;
+                if ( !$ngood_skip[$af_bin] ) { $skip = 0; } 
+                elsif ( rand(1) > $ngood_skip[$af_bin]/$ngood[$af_bin] ) { $skip = 0; }
+                else { $ngood_skip[$af_bin]--; }
+                $ngood[$af_bin]--;
             }
             elsif ( $class==$$self{bad_site} )
             {
-                if ( !$nbad_skip ) { $skip = 0; } 
-                elsif ( rand(1) > $nbad_skip/$nbad ) { $skip = 0; }
-                else { $nbad_skip--; }
-                $nbad--;
+                if ( !$nbad_skip[$af_bin] ) { $skip = 0; } 
+                elsif ( rand(1) > $nbad_skip[$af_bin]/$nbad[$af_bin] ) { $skip = 0; }
+                else { $nbad_skip[$af_bin]--; }
+                $nbad[$af_bin]--;
             }
-            if ( !$skip ) { print $fh_train join("\t",@out),"\n"; }
+            if ( !$skip ) 
+            { 
+                print $fh_train join("\t",@out),"\n";
+                if ( $class==$$self{good_site} ) { $ngood_train[$af_bin]++; }
+                else { $nbad_train[$af_bin]++; }
+            }
         }
         close($in) or $self->throw("close failed: $file");
     }
@@ -759,13 +962,25 @@ sub scale_annots
 
     # Write the quantiles
     open($fh,'>',$scale_fname) or $self->throw("$scale_fname: $!");
-    print $fh "# [1]Annotation\t[2]$$self{scale_qlow} quantile\t[3]$$self{scale_qhigh} quantile\t[4]nGood\t[5]nBad\t[6]nTrimmed\n";
+    print $fh "# [1]Annotation\t[2]Min\t[3]Max\t[4]$$self{scale_qlow} quantile\t[5]$$self{scale_qhigh} quantile\t[6]\%Trimmed\n";
     for (my $i=0; $i<@anns; $i++)
     {
         if ( !exists($nout[$i]) ) { $nout[$i] = 0 ; }
-        printf $fh "$anns[$i]\t$margins[$i][0]\t$margins[$i][1]\t$ngood\t$nbad\t%.4f\n", 100.*$nout[$i]/$ntot;
+        printf $fh "$anns[$i]\t$extremes[$i][0]\t$extremes[$i][1]\t$margins[$i][0]\t$margins[$i][1]\t%.4f\n", 100.*$nout[$i]/$ntot;
     }
     close($fh) or $self->throw("close failed: $scale_fname");
+
+    # Write number of training sites in individual AF bins
+    open($fh,'>',$af_bin_fname) or $self->throw("$af_bin_fname: $!");
+    print $fh "# [1]AF bin\t[2]AF\t[3]Good sites\t[4]Bad sites\t[5]Good training sites\t[6]Bad training sites\n";
+    for (my $i=0; $i<@bins; $i++) 
+    { 
+        if ( !$ngood_train[$i] ) { $ngood_train[$i] = 0; }
+        if ( !$nbad_train[$i] ) { $nbad_train[$i] = 0; }
+        print $fh $ntrain_str[$i] . "\t$ngood_train[$i]\t$nbad_train[$i]\n";
+    }
+    close($fh) or $self->throw("close failed: $scale_fname");
+
     rename("$outfile.part",$outfile) or $self->throw("rename: $outfile.part $outfile");
 }
 
@@ -785,8 +1000,8 @@ sub sanity_check_scaling
     if ( scalar @out )
     {
         $self->throw(
-                "Too many out-of-range values detected in some annotations. Did the quantile approximation failed or\n" .
-                "is the cutoff $$self{qaccuracy}\% too strict??\n" .
+                "Too many out-of-range values detected in some annotations: $file\n" .
+                "Did the quantile approximation failed or is the cutoff $$self{qaccuracy}\% too strict??\n" .
                 join('', @out) . "\n" );
 
     }
@@ -1007,6 +1222,7 @@ sub classify_eval
     close($gz) or $self->throw("close failed: bgzip -c > $outfile.sites.gz");
     close($score_fh) or $self->throw("close failed: $score_file");
     close($sites_fh) or $self->throw("close failed: gunzip -c $sites_file");
+    $self->cmd("tabix -s1 -b2 -e2 $outfile.sites.gz");
 
     open($fh,'<',"$outfile.tmp") or $self->throw("$outfile.tmp: $!");
     open(my $out,'>',"$outfile.part") or $self->throw("$outfile.part: $!");
@@ -1151,7 +1367,6 @@ sub annotate_scores
     my ($self,$outfile,$infile, @files) = @_;
     if ( scalar @files !=1 ) { $self->throw("todo: ", join(' ',@files), "\n"); }
     my $ann_fname = $files[0] . ".sites.gz";
-    if ( !$self->is_finished("$ann_fname.tbi") ) { $self->cmd("tabix -s1 -b2 -e2 $ann_fname"); }
     $self->cmd("$$self{bcftools} view $infile | vcf-annotate -a $ann_fname -d key=INFO,ID=MLQ,Number=1,Type=Float,Description='Machine Learning Quality' -c CHROM,FROM,INFO/MLQ | bgzip -c > $outfile.part");
     rename("$outfile.part",$outfile) or $self->throw("rename: $outfile.part $outfile");
 }
@@ -1178,8 +1393,6 @@ sub clean
 {
     my ($self,$outdir) = @_;
     $self->SUPER::clean($outdir);
-    $self->cmd("rm -rf $outdir/randomize.snps");
-    $self->cmd("rm -rf $outdir/randomize.indels");
 }
 
 sub runtime_stats
@@ -1209,11 +1422,18 @@ sub save_config
 sub tabix_part
 {
     my ($self,$vcf) = @_;
-    $self->cmd("tabix -p vcf -f $vcf.part");
-    rename("$vcf.part.tbi","$vcf.tbi");
+    if ( $vcf=~/\.vcf.gz$/ )
+    {
+        $self->cmd("$$self{bcftools} tabix -p vcf -f $vcf.part");
+        rename("$vcf.part.tbi","$vcf.tbi");
+    }
+    else
+    {
+        $self->cmd("$$self{bcftools} index $vcf.part");
+        rename("$vcf.part.csi","$vcf.csi");
+    }
     rename("$vcf.part",$vcf);
 }
-
 
 sub read_value
 {
@@ -1261,7 +1481,7 @@ sub SVM_Runner::new
     bless $self, ref($class) || $class;
 
     $$self{bcftools}     = 'bcftools';
-    $$self{svm_scale}    = '/nfs/users/nfs_p/pd3/sandbox/svn/svm/libsvm-3.17/svm-scale';
+    $$self{plot_stats}   = 'plot-vcfstats';
     $$self{svm_train}    = '/nfs/users/nfs_p/pd3/sandbox/svn/svm/libsvm-3.17/svm-train';
     $$self{svm_predict}  = '/nfs/users/nfs_p/pd3/sandbox/svn/svm/libsvm-3.17/svm-predict';
     $$self{apar}  = [-5,15,2];
@@ -1276,7 +1496,7 @@ sub SVM_Runner::new
             # ------------------------------------
 
             bcftools     => '] .$$self{bcftools}. q[',
-            svm_scale    => '] .$$self{svm_scale}. q[',
+            plot_stats   => '] .$$self{plot_stats}. q[',
             svm_train    => '] .$$self{svm_train}. q[',
             svm_predict  => '] .$$self{svm_predict}. q[',
 
@@ -1416,6 +1636,7 @@ sub SOM_Runner::new
     bless $self, ref($class) || $class;
 
     $$self{bcftools}     = 'bcftools';
+    $$self{plot_stats}   = 'plot-vcfstats';
     $$self{apar}         = [0.1,1.2,0.1];
     $$self{bpar}         = [20,50,5];
     $$self{aopt}         = 'l';
@@ -1430,6 +1651,7 @@ sub SOM_Runner::new
             # ------------------------------------
 
             bcftools     => '] .$$self{bcftools}. q[',
+            plot_stats   => '] .$$self{plot_stats}. q[',
 
             # Parameters scan: min,max,step
             apar => \[] .join(',',@{$$self{apar}}). q[\],  # c
